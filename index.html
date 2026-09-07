@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Parlay Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --turf-dark:#0F241A;
+    --turf:#17321F;
+    --felt:#1F3F29;
+    --felt-hi:#26492F;
+    --chalk:#F4F1E4;
+    --chalk-dim:#B9C4B8;
+    --gold:#CBA135;
+    --gold-soft:#e8cc7d;
+    --loss:#C1502E;
+    --win:#5B9A5E;
+    --line:rgba(244,241,228,0.14);
+    --radius-card: 6px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(1200px 500px at 50% -10%, rgba(203,161,53,0.10), transparent 60%),
+      var(--turf-dark);
+    color:var(--chalk);
+    font-family:'Work Sans', sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    padding-bottom:60px;
+  }
+  h1,h2,h3,.num{
+    font-family:'Barlow Condensed', sans-serif;
+    letter-spacing:0.01em;
+  }
+  a{color:inherit;}
+  button{font-family:inherit;}
+
+  /* ---------- header ---------- */
+  header.top{
+    padding:22px clamp(16px,4vw,40px) 14px;
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:16px;
+    flex-wrap:wrap;
+    border-bottom:1px solid var(--line);
+  }
+  .brand .eyebrow{
+    color:var(--gold-soft);
+    font-size:13px;
+    font-weight:600;
+    margin:0 0 2px;
+  }
+  .brand h1{
+    font-size:clamp(28px,4vw,38px);
+    font-weight:700;
+    margin:0;
+    line-height:1;
+  }
+  .brand .sub{
+    color:var(--chalk-dim);
+    font-size:14px;
+    margin-top:6px;
+  }
+  .who-row{
+    display:flex;
+    gap:10px;
+    align-items:center;
+    flex-wrap:wrap;
+  }
+  select, .btn, input[type=password]{
+    font-family:'Work Sans', sans-serif;
+    font-size:14px;
+  }
+  select{
+    background:var(--felt);
+    color:var(--chalk);
+    border:1px solid var(--line);
+    border-radius:5px;
+    padding:9px 12px;
+    min-width:190px;
+  }
+  .btn{
+    background:transparent;
+    color:var(--chalk);
+    border:1px solid var(--line);
+    border-radius:5px;
+    padding:9px 14px;
+    cursor:pointer;
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .btn:hover{border-color:var(--gold-soft);}
+  .btn.primary{
+    background:var(--gold);
+    border-color:var(--gold);
+    color:#20200D;
+    font-weight:600;
+  }
+  .btn.primary:hover{background:var(--gold-soft);}
+  .btn:disabled{opacity:.4; cursor:not-allowed;}
+  .btn.small{padding:6px 10px; font-size:13px;}
+  .admin-badge{
+    font-size:12px;
+    color:#20200D;
+    background:var(--gold-soft);
+    padding:4px 9px;
+    border-radius:20px;
+    font-weight:600;
+  }
+
+  /* ---------- scoreboard ---------- */
+  .scoreboard-wrap{
+    padding:18px clamp(16px,4vw,40px) 6px;
+    position:sticky; top:0; z-index:5;
+    background:linear-gradient(180deg, var(--turf-dark) 78%, transparent);
+  }
+  .scoreboard-label{
+    font-size:12px;
+    color:var(--chalk-dim);
+    margin:0 0 10px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  }
+  .scoreboard{
+    display:flex;
+    gap:10px;
+    overflow-x:auto;
+    padding-bottom:10px;
+    scrollbar-width:thin;
+  }
+  .chip{
+    flex:0 0 auto;
+    background:var(--felt);
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:10px 16px;
+    min-width:118px;
+    text-align:center;
+  }
+  .chip.rank1{
+    border-color:var(--gold);
+    box-shadow:0 0 0 1px var(--gold) inset, 0 0 18px rgba(203,161,53,0.25);
+  }
+  .chip .rank{font-size:11px; color:var(--chalk-dim); font-weight:600;}
+  .chip .name{font-size:14px; font-weight:600; margin:2px 0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;}
+  .chip .pts{font-size:26px; font-weight:700; color:var(--gold-soft); line-height:1;}
+  .chip .sub{font-size:10.5px; color:var(--chalk-dim); margin-top:2px;}
+
+  /* ---------- week tabs ---------- */
+  .week-nav{
+    padding:16px clamp(16px,4vw,40px) 0;
+    display:flex;
+    gap:8px;
+    overflow-x:auto;
+  }
+  .week-tab{
+    flex:0 0 auto;
+    background:none;
+    border:1px solid var(--line);
+    color:var(--chalk-dim);
+    border-radius:5px;
+    padding:7px 13px;
+    cursor:pointer;
+    font-size:13px;
+  }
+  .week-tab.active{
+    background:var(--felt-hi);
+    color:var(--chalk);
+    border-color:var(--gold-soft);
+  }
+  .week-tab .dot{
+    display:inline-block; width:6px; height:6px; border-radius:50%;
+    background:var(--gold); margin-left:6px; vertical-align:middle;
+  }
+
+  main{padding:20px clamp(16px,4vw,40px) 0;}
+  section.block{margin-bottom:34px;}
+  .block h2{
+    font-size:22px;
+    font-weight:600;
+    margin:0 0 4px;
+  }
+  .block .block-sub{
+    color:var(--chalk-dim);
+    font-size:13.5px;
+    margin:0 0 14px;
+  }
+
+  /* ---------- ticket ---------- */
+  .ticket{
+    position:relative;
+    background:var(--felt);
+    border:1px solid var(--line);
+    border-radius:var(--radius-card);
+    overflow:hidden;
+  }
+  .ticket .notch{
+    position:absolute; width:18px; height:18px; border-radius:50%;
+    background:var(--turf-dark); top:50%; transform:translateY(-50%);
+  }
+  .ticket .notch.l{left:-9px;} .ticket .notch.r{right:-9px;}
+  .ticket-head{
+    display:flex; align-items:center; gap:10px;
+    padding:14px 18px;
+    border-bottom:1px dashed var(--line);
+  }
+  .avatar{
+    width:34px; height:34px; border-radius:50%;
+    background:var(--felt-hi); object-fit:cover;
+    border:1px solid var(--line);
+    flex:0 0 auto;
+  }
+  .avatar-fallback{
+    width:34px; height:34px; border-radius:50%;
+    background:var(--felt-hi); display:flex; align-items:center; justify-content:center;
+    font-weight:600; font-size:13px; color:var(--gold-soft); flex:0 0 auto;
+  }
+  .ticket-head .team-name{font-weight:600; font-size:15px;}
+  .ticket-head .owner-name{font-size:12px; color:var(--chalk-dim);}
+  .ticket-status{
+    margin-left:auto; font-size:11px; padding:4px 9px; border-radius:20px; font-weight:600;
+  }
+  .status-locked{background:rgba(203,161,53,0.18); color:var(--gold-soft);}
+  .status-open{background:rgba(244,241,228,0.1); color:var(--chalk-dim);}
+  .status-win{background:rgba(91,154,94,0.22); color:#9fd6a1;}
+  .status-loss{background:rgba(193,80,46,0.22); color:#f0a487;}
+
+  .legs{padding:12px 18px;}
+  .leg-row{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:7px 0; font-size:13.5px; border-bottom:1px solid var(--line);
+  }
+  .leg-row:last-child{border-bottom:none;}
+  .leg-row .pick{font-weight:600;}
+  .leg-row .vs{color:var(--chalk-dim); font-size:12px;}
+  .leg-row.own .pick::after{content:" · own matchup"; color:var(--gold-soft); font-weight:500; font-size:11px;}
+
+  .ticket-foot{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:12px 18px; border-top:1px dashed var(--line);
+    font-size:13px; color:var(--chalk-dim);
+  }
+  .ticket-foot .pts-earned{font-family:'Barlow Condensed'; font-size:20px; font-weight:700; color:var(--gold-soft);}
+  .empty-slip{padding:22px 18px; color:var(--chalk-dim); font-size:14px; text-align:center;}
+
+  /* ---------- board grid ---------- */
+  .board-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(270px,1fr));
+    gap:16px;
+  }
+  .edit-link{
+    background:none; border:none; color:var(--gold-soft); font-size:12px; cursor:pointer; padding:0;
+    text-decoration:underline; text-underline-offset:2px;
+  }
+
+  /* ---------- builder ---------- */
+  .builder{
+    background:var(--felt);
+    border:1px solid var(--line);
+    border-radius:var(--radius-card);
+    padding:18px clamp(16px,3vw,26px);
+  }
+  .builder-top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:14px;}
+  .leg-counter{font-size:13px; color:var(--chalk-dim);}
+  .leg-counter b{color:var(--gold-soft); font-family:'Barlow Condensed'; font-size:17px;}
+  .matchup-picker{display:flex; flex-direction:column; gap:8px;}
+  .matchup-row{
+    display:grid; grid-template-columns:1fr auto 1fr;
+    gap:8px; align-items:center;
+  }
+  .side-btn{
+    display:flex; align-items:center; gap:9px;
+    background:var(--turf);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:10px 12px;
+    cursor:pointer;
+    text-align:left;
+    color:var(--chalk);
+    transition:border-color .12s ease, background .12s ease;
+  }
+  .side-btn:hover:not(:disabled){border-color:var(--gold-soft);}
+  .side-btn.selected{
+    background:rgba(203,161,53,0.14);
+    border-color:var(--gold);
+  }
+  .side-btn:disabled{opacity:.35; cursor:not-allowed;}
+  .side-btn .nm{font-weight:600; font-size:13.5px;}
+  .side-btn .own-tag{display:block; font-size:10.5px; color:var(--gold-soft); font-weight:600; margin-top:1px;}
+  .matchup-row .at{text-align:center; font-size:11px; color:var(--chalk-dim); font-family:'Barlow Condensed';}
+  .builder-warn{
+    font-size:13px; color:#f0a487; background:rgba(193,80,46,0.15);
+    border:1px solid rgba(193,80,46,0.4); border-radius:5px; padding:9px 12px; margin-top:12px;
+  }
+  .builder-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:16px;}
+
+  .state-msg{
+    color:var(--chalk-dim);
+    font-size:14px;
+    padding:30px 0;
+    text-align:center;
+  }
+
+  /* ---------- modal (admin pin) ---------- */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(10,18,13,0.7);
+    display:flex; align-items:center; justify-content:center; z-index:50;
+  }
+  .modal{
+    background:var(--felt); border:1px solid var(--line); border-radius:8px;
+    padding:22px; width:min(320px, 90vw);
+  }
+  .modal h3{margin:0 0 10px; font-size:19px;}
+  .modal input{
+    width:100%; background:var(--turf); border:1px solid var(--line); color:var(--chalk);
+    border-radius:5px; padding:9px 11px; margin-bottom:12px;
+  }
+  .modal-actions{display:flex; justify-content:flex-end; gap:8px;}
+  .modal-err{color:#f0a487; font-size:12.5px; margin:-6px 0 10px;}
+
+  footer.pagefoot{
+    padding:30px clamp(16px,4vw,40px) 10px; color:var(--chalk-dim); font-size:12px; text-align:center;
+  }
+
+  @media (max-width:520px){
+    .matchup-row{grid-template-columns:1fr; }
+    .matchup-row .at{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <p class="eyebrow" id="league-season-label">Loading…</p>
+    <h1 id="league-name">The Parlay Board</h1>
+    <p class="sub">Six matchups. Up to six legs. All or nothing.</p>
+  </div>
+  <div class="who-row">
+    <select id="who-select"><option value="">Who are you?</option></select>
+    <button class="btn" id="admin-btn">Admin</button>
+    <span class="admin-badge" id="admin-badge" style="display:none;">Admin mode</span>
+  </div>
+</header>
+
+<div class="scoreboard-wrap">
+  <p class="scoreboard-label">
+    <span>Season standings</span>
+    <button class="btn small" id="refresh-btn">Refresh scores</button>
+  </p>
+  <div class="scoreboard" id="scoreboard"></div>
+</div>
+
+<div class="week-nav" id="week-nav"></div>
+
+<main>
+  <section class="block" id="your-slip-block">
+    <h2 id="your-slip-title">Your slip</h2>
+    <p class="block-sub" id="your-slip-sub">Pick who you are to place or view your parlay.</p>
+    <div id="your-slip"></div>
+  </section>
+
+  <section class="block">
+    <h2>This week's board</h2>
+    <p class="block-sub">Every locked slip in the league, in one place.</p>
+    <div class="board-grid" id="board-grid"></div>
+  </section>
+</main>
+
+<footer class="pagefoot">Scoring &amp; matchups pulled live from Sleeper. Points: 2 legs=1 · 3=3 · 4=6 · 5=10 · 6=15, all legs must hit.</footer>
+
+<div id="modal-root"></div>
+
+<!-- Firebase (compat build — no bundler needed, works from a plain static file) -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+
+<script>
+/* =========================================================================
+   CONFIG — edit these for your league, then re-deploy the file.
+   ========================================================================= */
+const LEAGUE_ID  = "1389693561678606336";
+const ADMIN_PIN  = "commish"; // change this before sharing the page with your league
+
+/* Paste the config object Firebase gives you when you register a Web App
+   (Project settings -> your app -> SDK setup and configuration). These
+   values are meant to be public — Firestore security rules are what
+   actually control who can read/write, not this object. */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBk65c1hP6qc7FJQRI-rfYPdi8C_Ertivc",
+  authDomain: "fantasy-parlay.firebaseapp.com",
+  projectId: "fantasy-parlay",
+  storageBucket: "fantasy-parlay.firebasestorage.app",
+  messagingSenderId: "866220355549",
+  appId: "1:866220355549:web:f29b16d4b1103891b61034",
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.firestore();
+
+/* Parlay leg-count -> points, all-or-nothing */
+const POINTS_TABLE = {2:1, 3:3, 4:6, 5:10, 6:15};
+const MIN_LEGS = 2, MAX_LEGS = 6;
+
+/* =========================================================================
+   STATE (in-memory only — resets on reload, nothing sensitive stored client side)
+   ========================================================================= */
+const S = {
+  league: null,           // sleeper league object
+  season: null,
+  users: [],               // [{userId, teamName, ownerName, avatarUrl, rosterId}]
+  usersById: {},
+  nflWeek: 1,
+  nflSeasonType: "regular",
+  selectedWeek: 1,
+  currentUserId: "",
+  isAdmin: false,
+  matchupsCache: {},      // week -> [{matchupId, teamA, teamB}]
+  parlaysCache: {},       // week -> {userId: pickObj}
+  scoreboard: {},         // userId -> total points
+  builderLegs: [],        // legs currently selected in the open builder
+  builderTarget: null,    // userId the open builder is editing
+  loaded:false,
+};
+
+/* =========================================================================
+   SLEEPER API HELPERS
+   ========================================================================= */
+async function sleeperGet(path){
+  const res = await fetch(`https://api.sleeper.app/v1/${path}`);
+  if(!res.ok) throw new Error(`Sleeper API error on ${path}: ${res.status}`);
+  return res.json();
+}
+
+async function loadLeagueMeta(){
+  const [league, users, rosters, nflState] = await Promise.all([
+    sleeperGet(`league/${LEAGUE_ID}`),
+    sleeperGet(`league/${LEAGUE_ID}/users`),
+    sleeperGet(`league/${LEAGUE_ID}/rosters`),
+    sleeperGet(`state/nfl`),
+  ]);
+  S.league = league;
+  S.season = league.season;
+  S.nflWeek = nflState.week || 1;
+  S.nflSeasonType = nflState.season_type || "regular";
+
+  const rosterByOwner = {};
+  rosters.forEach(r => { rosterByOwner[r.owner_id] = r.roster_id; });
+
+  S.users = users.map(u => ({
+    userId: u.user_id,
+    teamName: (u.metadata && u.metadata.team_name) ? u.metadata.team_name : u.display_name,
+    ownerName: u.display_name,
+    avatarUrl: u.avatar ? `https://sleepercdn.com/avatars/thumbs/${u.avatar}` : null,
+    rosterId: rosterByOwner[u.user_id],
+  })).sort((a,b)=> a.teamName.localeCompare(b.teamName));
+
+  S.usersById = {};
+  S.users.forEach(u => S.usersById[u.userId] = u);
+
+  S.selectedWeek = Math.max(1, S.nflWeek);
+}
+
+async function loadMatchupsForWeek(week){
+  if(S.matchupsCache[week]) return S.matchupsCache[week];
+  const raw = await sleeperGet(`league/${LEAGUE_ID}/matchups/${week}`);
+  const byId = new Map();
+  raw.forEach(e=>{
+    if(e.matchup_id === null || e.matchup_id === undefined) return;
+    if(!byId.has(e.matchup_id)) byId.set(e.matchup_id, []);
+    byId.get(e.matchup_id).push(e);
+  });
+  const userByRoster = {};
+  S.users.forEach(u => userByRoster[u.rosterId] = u);
+
+  const matchups = [];
+  byId.forEach((entries, matchupId)=>{
+    if(entries.length !== 2) return;
+    const [a,b] = entries;
+    const ua = userByRoster[a.roster_id], ub = userByRoster[b.roster_id];
+    if(!ua || !ub) return;
+    matchups.push({
+      matchupId,
+      teamA: { rosterId:a.roster_id, userId:ua.userId, name:ua.teamName, points: (typeof a.points==='number'? a.points: null) },
+      teamB: { rosterId:b.roster_id, userId:ub.userId, name:ub.teamName, points: (typeof b.points==='number'? b.points: null) },
+    });
+  });
+  matchups.sort((m1,m2)=>m1.matchupId-m2.matchupId);
+  S.matchupsCache[week] = matchups;
+  return matchups;
+}
+
+function isWeekFinal(week){
+  return week < S.nflWeek;
+}
+
+/* =========================================================================
+   STORAGE (Firestore — shared, so the whole league sees the same board)
+   ========================================================================= */
+function parlayDocId(week){ return `${S.season}_${week}`; }
+
+async function loadParlaysForWeek(week, force){
+  if(S.parlaysCache[week] && !force) return S.parlaysCache[week];
+  let obj = {};
+  try{
+    const snap = await db.collection('parlays').doc(parlayDocId(week)).get();
+    if(snap.exists) obj = snap.data() || {};
+  }catch(e){ console.error('Firestore read failed', e); obj = {}; }
+  S.parlaysCache[week] = obj;
+  return obj;
+}
+
+async function saveParlaysForWeek(week, obj){
+  await db.collection('parlays').doc(parlayDocId(week)).set(obj);
+  S.parlaysCache[week] = obj;
+}
+
+/* =========================================================================
+   SCORING
+   ========================================================================= */
+function scoreParlay(pick, matchups){
+  if(!pick || !pick.legs || pick.legs.length < MIN_LEGS) return null;
+  const byId = new Map(matchups.map(m=>[m.matchupId, m]));
+  for(const leg of pick.legs){
+    const m = byId.get(leg.matchupId);
+    if(!m || m.teamA.points===null || m.teamB.points===null) return null; // not final yet
+    const winner = m.teamA.points===m.teamB.points ? null
+      : (m.teamA.points>m.teamB.points ? m.teamA.rosterId : m.teamB.rosterId);
+    if(winner !== leg.rosterId) return 0;
+  }
+  return POINTS_TABLE[pick.legs.length] || 0;
+}
+
+async function computeScoreboard(){
+  const totals = {};
+  S.users.forEach(u=>totals[u.userId] = {points:0, hits:0, plays:0});
+  const lastCompleted = S.nflWeek - 1;
+  const weeks = [];
+  for(let w=1; w<=Math.max(lastCompleted,0); w++) weeks.push(w);
+
+  await Promise.all(weeks.map(async w=>{
+    const [parlays, matchups] = await Promise.all([loadParlaysForWeek(w), loadMatchupsForWeek(w)]);
+    Object.entries(parlays).forEach(([userId, pick])=>{
+      if(!totals[userId]) totals[userId] = {points:0, hits:0, plays:0};
+      const pts = scoreParlay(pick, matchups);
+      if(pts !== null){
+        totals[userId].points += pts;
+        totals[userId].plays += 1;
+        if(pts>0) totals[userId].hits += 1;
+      }
+    });
+  }));
+  S.scoreboard = totals;
+}
+
+/* =========================================================================
+   RENDER: header / who-select
+   ========================================================================= */
+function renderHeader(){
+  document.getElementById('league-name').textContent = S.league.name || "The Parlay Board";
+  document.getElementById('league-season-label').textContent =
+    `${S.season} season · week ${S.nflWeek}${S.nflSeasonType!=='regular' ? ' · '+S.nflSeasonType : ''}`;
+
+  const sel = document.getElementById('who-select');
+  sel.innerHTML = `<option value="">Who are you?</option>` +
+    S.users.map(u=>`<option value="${u.userId}">${escapeHtml(u.teamName)}</option>`).join('');
+  sel.value = S.currentUserId;
+}
+
+/* =========================================================================
+   RENDER: scoreboard
+   ========================================================================= */
+function renderScoreboard(){
+  const rows = S.users.map(u=>({
+    u, ...(S.scoreboard[u.userId] || {points:0, hits:0, plays:0})
+  })).sort((a,b)=> b.points - a.points);
+
+  const el = document.getElementById('scoreboard');
+  el.innerHTML = rows.map((r,i)=>`
+    <div class="chip ${i===0 && r.points>0 ? 'rank1':''}">
+      <div class="rank">#${i+1}</div>
+      <div class="name">${escapeHtml(r.u.teamName)}</div>
+      <div class="pts">${r.points}</div>
+      <div class="sub">${r.hits} hit${r.hits===1?'':'s'} / ${r.plays} played</div>
+    </div>
+  `).join('');
+}
+
+/* =========================================================================
+   RENDER: week tabs
+   ========================================================================= */
+function renderWeekTabs(){
+  const maxWeek = Math.max(S.nflWeek, 1);
+  const totalTabs = Math.max(maxWeek, 1);
+  const el = document.getElementById('week-nav');
+  let html = '';
+  for(let w=1; w<=Math.min(totalTabs,18); w++){
+    const active = w===S.selectedWeek;
+    const isOpenWeek = w===S.nflWeek;
+    html += `<button class="week-tab ${active?'active':''}" data-week="${w}">Week ${w}${isOpenWeek?'<span class="dot"></span>':''}</button>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('.week-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      S.selectedWeek = parseInt(btn.dataset.week,10);
+      renderWeekDependent();
+    });
+  });
+}
+
+/* =========================================================================
+   RENDER: "your slip" + board grid — the week-dependent stuff
+   ========================================================================= */
+async function renderWeekDependent(){
+  renderWeekTabs();
+  document.getElementById('your-slip').innerHTML = `<p class="state-msg">Loading week ${S.selectedWeek}…</p>`;
+  document.getElementById('board-grid').innerHTML = '';
+
+  const [matchups, parlays] = await Promise.all([
+    loadMatchupsForWeek(S.selectedWeek),
+    loadParlaysForWeek(S.selectedWeek),
+  ]);
+
+  renderYourSlip(matchups, parlays);
+  renderBoardGrid(matchups, parlays);
+}
+
+function ownMatchupIdFor(userId, matchups){
+  const u = S.usersById[userId];
+  if(!u) return null;
+  const m = matchups.find(mu => mu.teamA.rosterId===u.rosterId || mu.teamB.rosterId===u.rosterId);
+  return m ? m.matchupId : null;
+}
+
+function ticketAvatar(u){
+  if(u.avatarUrl) return `<img class="avatar" src="${u.avatarUrl}" alt="">`;
+  return `<div class="avatar-fallback">${escapeHtml((u.teamName||'?').slice(0,1).toUpperCase())}</div>`;
+}
+
+function legLine(leg, matchups){
+  const m = matchups.find(mm=>mm.matchupId===leg.matchupId);
+  if(!m) return {pickName:'Unknown', oppName:'', isFinal:false, correct:null};
+  const pickSide = m.teamA.rosterId===leg.rosterId ? m.teamA : m.teamB;
+  const oppSide  = m.teamA.rosterId===leg.rosterId ? m.teamB : m.teamA;
+  const isFinal = pickSide.points!==null && oppSide.points!==null && isWeekFinal(S.selectedWeek);
+  let correct = null;
+  if(isFinal) correct = pickSide.points > oppSide.points;
+  return {pickName:pickSide.name, oppName:oppSide.name, isFinal, correct};
+}
+
+function renderTicketFor(userId, matchups, parlays, {allowEdit=false} = {}){
+  const u = S.usersById[userId];
+  const pick = parlays[userId];
+  const ownMid = ownMatchupIdFor(userId, matchups);
+
+  let statusHtml, footHtml = '';
+  if(!pick){
+    statusHtml = `<span class="ticket-status status-open">Not placed</span>`;
+  } else {
+    const final = isWeekFinal(S.selectedWeek);
+    const pts = final ? scoreParlay(pick, matchups) : null;
+    if(final && pts!==null){
+      statusHtml = pts>0
+        ? `<span class="ticket-status status-win">Hit</span>`
+        : `<span class="ticket-status status-loss">Miss</span>`;
+      footHtml = `<div class="ticket-foot"><span>${pick.legs.length}-leg parlay</span><span class="pts-earned">${pts} pt${pts===1?'':'s'}</span></div>`;
+    } else {
+      statusHtml = `<span class="ticket-status status-locked">Locked</span>`;
+      footHtml = `<div class="ticket-foot"><span>${pick.legs.length}-leg parlay</span><span>Potential ${POINTS_TABLE[pick.legs.length]||0} pts</span></div>`;
+    }
+  }
+
+  const legsHtml = pick ? pick.legs.map(leg=>{
+    const info = legLine(leg, matchups);
+    const isOwn = leg.matchupId===ownMid;
+    let mark = '';
+    if(info.isFinal) mark = info.correct ? ' style="color:#9fd6a1;"' : ' style="color:#f0a487; text-decoration:line-through; text-decoration-color:#f0a48788;"';
+    return `<div class="leg-row ${isOwn?'own':''}">
+      <span class="pick"${mark}>${escapeHtml(info.pickName)}</span>
+      <span class="vs">vs ${escapeHtml(info.oppName)}</span>
+    </div>`;
+  }).join('') : `<div class="empty-slip">No parlay placed for week ${S.selectedWeek}.</div>`;
+
+  const editBtn = allowEdit ? `<button class="edit-link" data-edit-user="${userId}">${pick? 'Edit (admin)':'Place on behalf'}</button>` : '';
+
+  return `
+  <div class="ticket">
+    <span class="notch l"></span><span class="notch r"></span>
+    <div class="ticket-head">
+      ${ticketAvatar(u)}
+      <div>
+        <div class="team-name">${escapeHtml(u.teamName)}</div>
+        <div class="owner-name">${escapeHtml(u.ownerName)}</div>
+      </div>
+      ${statusHtml}
+    </div>
+    <div class="legs">${legsHtml}</div>
+    ${footHtml}
+    ${editBtn ? `<div style="padding:0 18px 14px;">${editBtn}</div>` : ''}
+  </div>`;
+}
+
+function renderYourSlip(matchups, parlays){
+  const title = document.getElementById('your-slip-title');
+  const sub = document.getElementById('your-slip-sub');
+  const box = document.getElementById('your-slip');
+
+  if(!S.currentUserId){
+    title.textContent = 'Your slip';
+    sub.textContent = 'Pick who you are up top to place or view your parlay.';
+    box.innerHTML = `<p class="state-msg">Select your team from the dropdown to get started.</p>`;
+    return;
+  }
+
+  const u = S.usersById[S.currentUserId];
+  title.textContent = `${u.teamName}'s slip — week ${S.selectedWeek}`;
+  const pick = parlays[S.currentUserId];
+  const openWeek = S.selectedWeek === S.nflWeek && !isWeekFinal(S.selectedWeek);
+
+  if(pick){
+    sub.textContent = 'Your parlay is locked in for this week.';
+    box.innerHTML = renderTicketFor(S.currentUserId, matchups, parlays, {allowEdit:S.isAdmin});
+    bindEditLinks(matchups, parlays);
+    return;
+  }
+
+  if(!openWeek){
+    sub.textContent = S.selectedWeek > S.nflWeek
+      ? "This week hasn't opened yet."
+      : "You didn't place a parlay this week.";
+    box.innerHTML = `<div class="ticket"><span class="notch l"></span><span class="notch r"></span><div class="empty-slip">No parlay placed for week ${S.selectedWeek}.</div></div>`;
+    return;
+  }
+
+  sub.textContent = 'Pick 2 to 6 winners. Get every leg right to score.';
+  box.innerHTML = renderBuilder(matchups, S.currentUserId);
+  bindBuilder(matchups, parlays, S.currentUserId, false);
+}
+
+function renderBoardGrid(matchups, parlays){
+  const others = S.users.filter(u=>true); // show everyone, including "you", for full transparency
+  const grid = document.getElementById('board-grid');
+  if(matchups.length===0){
+    grid.innerHTML = `<p class="state-msg">No matchups found for week ${S.selectedWeek} yet.</p>`;
+    return;
+  }
+  grid.innerHTML = others.map(u=>renderTicketFor(u.userId, matchups, parlays, {allowEdit:S.isAdmin})).join('');
+  bindEditLinks(matchups, parlays);
+}
+
+function bindEditLinks(matchups, parlays){
+  document.querySelectorAll('[data-edit-user]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const targetUser = btn.dataset.editUser;
+      const box = targetUser===S.currentUserId ? document.getElementById('your-slip') : null;
+      openAdminBuilder(matchups, parlays, targetUser);
+    });
+  });
+}
+
+/* =========================================================================
+   BUILDER (slip-picking UI)
+   ========================================================================= */
+function renderBuilder(matchups, forUserId, prefillLegs){
+  S.builderLegs = prefillLegs ? [...prefillLegs] : [];
+  S.builderTarget = forUserId;
+  const ownMid = ownMatchupIdFor(forUserId, matchups);
+
+  return `
+  <div class="builder" id="builder-root">
+    <div class="builder-top">
+      <div class="leg-counter">Legs selected: <b id="leg-count">${S.builderLegs.length}</b> / ${MAX_LEGS} (min ${MIN_LEGS})</div>
+    </div>
+    <div class="matchup-picker" id="matchup-picker">
+      ${matchups.map(m=>matchupRowHtml(m, ownMid)).join('')}
+    </div>
+    <div id="builder-warn"></div>
+    <div class="builder-actions">
+      <button class="btn primary" id="submit-slip-btn">Lock in slip</button>
+    </div>
+  </div>`;
+}
+
+function matchupRowHtml(m, ownMid){
+  const isOwn = m.matchupId===ownMid;
+  const aSel = S.builderLegs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamA.rosterId);
+  const bSel = S.builderLegs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamB.rosterId);
+  return `
+  <div class="matchup-row" data-matchup="${m.matchupId}">
+    <button class="side-btn ${aSel?'selected':''}" data-matchup="${m.matchupId}" data-roster="${m.teamA.rosterId}">
+      <span><span class="nm">${escapeHtml(m.teamA.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}</span>
+    </button>
+    <span class="at">vs</span>
+    <button class="side-btn ${bSel?'selected':''}" data-matchup="${m.matchupId}" data-roster="${m.teamB.rosterId}">
+      <span><span class="nm">${escapeHtml(m.teamB.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}</span>
+    </button>
+  </div>`;
+}
+
+function bindBuilder(matchups, parlays, forUserId, isAdminEdit){
+  const root = document.getElementById('builder-root');
+  if(!root) return;
+  const ownMid = ownMatchupIdFor(forUserId, matchups);
+
+  root.querySelectorAll('.side-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const matchupId = parseInt(btn.dataset.matchup,10);
+      const rosterId = parseInt(btn.dataset.roster,10);
+      const existingIdx = S.builderLegs.findIndex(l=>l.matchupId===matchupId);
+      if(existingIdx>=0 && S.builderLegs[existingIdx].rosterId===rosterId){
+        S.builderLegs.splice(existingIdx,1); // toggle off
+      } else if(existingIdx>=0){
+        S.builderLegs[existingIdx] = {matchupId, rosterId}; // switch side
+      } else {
+        if(S.builderLegs.length>=MAX_LEGS) return;
+        S.builderLegs.push({matchupId, rosterId});
+      }
+      refreshBuilderUI(matchups, ownMid);
+    });
+  });
+
+  document.getElementById('submit-slip-btn').addEventListener('click', async ()=>{
+    const err = validateLegs(S.builderLegs, ownMid);
+    const warnBox = document.getElementById('builder-warn');
+    if(err){ warnBox.innerHTML = `<div class="builder-warn">${err}</div>`; return; }
+    warnBox.innerHTML = '';
+
+    const btn = document.getElementById('submit-slip-btn');
+    btn.disabled = true; btn.textContent = 'Locking in…';
+
+    const weekParlays = await loadParlaysForWeek(S.selectedWeek, true);
+    weekParlays[forUserId] = {
+      legs: S.builderLegs,
+      legCount: S.builderLegs.length,
+      submittedAt: new Date().toISOString(),
+      editedByAdmin: isAdminEdit,
+    };
+    await saveParlaysForWeek(S.selectedWeek, weekParlays);
+    await renderWeekDependent();
+  });
+}
+
+function refreshBuilderUI(matchups, ownMid){
+  document.getElementById('leg-count').textContent = S.builderLegs.length;
+  document.getElementById('matchup-picker').innerHTML = matchups.map(m=>matchupRowHtml(m, ownMid)).join('');
+  // re-bind since we replaced innerHTML
+  bindBuilder(matchups, S.parlaysCache[S.selectedWeek]||{}, S.builderTarget, S.builderTarget!==S.currentUserId);
+  document.getElementById('builder-warn').innerHTML = '';
+}
+
+function validateLegs(legs, ownMid){
+  if(legs.length < MIN_LEGS) return `Pick at least ${MIN_LEGS} legs.`;
+  if(legs.length > MAX_LEGS) return `You can't pick more than ${MAX_LEGS} legs.`;
+  const includesOwn = legs.some(l=>l.matchupId===ownMid);
+  if(includesOwn && legs.length !== 6) return `Your own matchup can only be included in a full 6-leg parlay.`;
+  return null;
+}
+
+/* Admin: open a builder for any user, in a modal-free inline replace of the board card */
+function openAdminBuilder(matchups, parlays, targetUserId){
+  const existing = parlays[targetUserId];
+  const html = renderBuilder(matchups, targetUserId, existing ? existing.legs : []);
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `<div class="modal" style="width:min(560px,92vw);">
+    <h3>Edit ${escapeHtml(S.usersById[targetUserId].teamName)}'s slip — week ${S.selectedWeek}</h3>
+    <div id="admin-builder-slot"></div>
+    <div class="modal-actions" style="margin-top:10px;">
+      <button class="btn" id="admin-cancel">Cancel</button>
+    </div>
+  </div>`;
+  document.getElementById('modal-root').appendChild(wrap);
+  document.getElementById('admin-builder-slot').innerHTML = html;
+  bindBuilder(matchups, parlays, targetUserId, true);
+
+  document.getElementById('admin-cancel').addEventListener('click', ()=> wrap.remove());
+  // after a successful submit inside the admin builder, renderWeekDependent() runs and rebuilds
+  // the board — close this modal once that happens.
+  const origSubmit = document.getElementById('submit-slip-btn');
+  origSubmit.addEventListener('click', ()=>{ setTimeout(()=>wrap.remove(), 50); }, {once:true});
+}
+
+/* =========================================================================
+   ADMIN LOGIN
+   ========================================================================= */
+function openAdminModal(){
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `<div class="modal">
+    <h3>Admin sign-in</h3>
+    <input type="password" id="admin-pin-input" placeholder="PIN">
+    <div class="modal-err" id="admin-pin-err" style="display:none;">Wrong PIN.</div>
+    <div class="modal-actions">
+      <button class="btn" id="admin-cancel-2">Cancel</button>
+      <button class="btn primary" id="admin-submit">Sign in</button>
+    </div>
+  </div>`;
+  document.getElementById('modal-root').appendChild(wrap);
+  const input = document.getElementById('admin-pin-input');
+  input.focus();
+  document.getElementById('admin-cancel-2').addEventListener('click', ()=>wrap.remove());
+  document.getElementById('admin-submit').addEventListener('click', trySubmit);
+  input.addEventListener('keydown', e=>{ if(e.key==='Enter') trySubmit(); });
+  function trySubmit(){
+    if(input.value === ADMIN_PIN){
+      S.isAdmin = true;
+      document.getElementById('admin-badge').style.display = 'inline-block';
+      wrap.remove();
+      renderWeekDependent();
+    } else {
+      document.getElementById('admin-pin-err').style.display = 'block';
+    }
+  }
+}
+
+/* =========================================================================
+   UTIL + WIRING
+   ========================================================================= */
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function fullReload(){
+  await computeScoreboard();
+  renderScoreboard();
+  await renderWeekDependent();
+}
+
+async function init(){
+  try{
+    await loadLeagueMeta();
+  }catch(e){
+    document.querySelector('main').innerHTML = `<p class="state-msg">Couldn't load the league from Sleeper. Double-check the league ID at the top of the file.<br><small>${escapeHtml(e.message)}</small></p>`;
+    return;
+  }
+  renderHeader();
+
+  document.getElementById('who-select').addEventListener('change', e=>{
+    S.currentUserId = e.target.value;
+    renderWeekDependent();
+  });
+  document.getElementById('admin-btn').addEventListener('click', openAdminModal);
+  document.getElementById('refresh-btn').addEventListener('click', ()=>{
+    S.matchupsCache = {};
+    fullReload();
+  });
+
+  await fullReload();
+}
+
+init();
+</script>
+</body>
+</html>
