@@ -439,6 +439,8 @@
   .tx-roster-line b{font-weight:600;}
   .tx-add{color:var(--win); font-weight:500;}
   .tx-drop{color:var(--loss); font-weight:500;}
+  .tx-roster-head{display:inline;}
+  .tx-roster-head::after{content:" — "; color:var(--text-dim); font-weight:400;}
   .tx-players .tx-player{display:inline;}
   .tx-players .tx-player:not(:last-child)::after{content:", "; color:var(--text-dim); font-weight:400;}
 
@@ -480,10 +482,34 @@
     .matchup-row .at{ font-size:10px; }
     .schedule-row{ grid-template-columns:1fr auto 1fr; }
     .sched-score{ display:none; }
-    .tx-roster-line{ display:flex; flex-direction:column; gap:2px; }
-    .tx-players{ display:flex; flex-direction:column; gap:2px; }
-    .tx-players .tx-player{ display:block; }
-    .tx-players .tx-player::after{ content:none; }
+
+    /* Roster changes: match the parlay-slip ticket look — name on top,
+       divided by a line, one player per row, no dash, no commas. */
+    .tx-roster-line{
+      border:1px solid var(--border);
+      border-radius:var(--radius-md);
+      overflow:hidden;
+      margin-bottom:10px;
+      background:var(--surface);
+    }
+    .tx-roster-line:last-child{margin-bottom:0;}
+    .tx-roster-head{
+      display:block;
+      padding:10px 14px;
+      border-bottom:1px solid var(--border);
+      font-weight:600;
+      font-size:14px;
+    }
+    .tx-roster-head::after{content:none;}
+    .tx-players{display:block; padding:2px 14px 2px;}
+    .tx-players .tx-player{
+      display:block;
+      padding:8px 0;
+      border-bottom:1px solid var(--border);
+      font-size:13.5px;
+    }
+    .tx-players .tx-player:last-child{border-bottom:none;}
+    .tx-players .tx-player::after{content:none;}
   }
 </style>
 </head>
@@ -1127,7 +1153,10 @@ function renderTxRow(t, playersMap, nameByRoster){
     const drops = byRosterDrops[rid]||[];
     const addSpans = adds.map(name=>`<span class="tx-player tx-add">+ ${escapeHtml(name)}</span>`).join('');
     const dropSpans = drops.map(name=>`<span class="tx-player tx-drop">− ${escapeHtml(name)}</span>`).join('');
-    return `<div class="tx-roster-line"><b>${escapeHtml(nameByRoster[rid]||'Unknown team')}</b> — <span class="tx-players">${addSpans}${dropSpans}</span></div>`;
+    return `<div class="tx-roster-line">
+      <div class="tx-roster-head"><b>${escapeHtml(nameByRoster[rid]||'Unknown team')}</b></div>
+      <div class="tx-players">${addSpans}${dropSpans}</div>
+    </div>`;
   }).join('');
 
   return `
