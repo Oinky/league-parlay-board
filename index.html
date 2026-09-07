@@ -420,6 +420,32 @@
   .sched-vs{color:var(--text-dim); font-size:11.5px; font-weight:600;}
   .sched-score{color:var(--text-dim); font-size:12.5px; font-variant-numeric:tabular-nums; white-space:nowrap;}
 
+  /* ---------- transactions screen ---------- */
+  .tx-row{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md);
+    padding:13px 16px; margin-bottom:10px; box-shadow:var(--shadow-sm);
+  }
+  .tx-head{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:8px; gap:10px;
+  }
+  .tx-type{
+    font-size:12px; font-weight:700; color:var(--accent);
+    background:var(--accent-soft); padding:3px 9px; border-radius:980px;
+  }
+  .tx-date{font-size:12px; color:var(--text-dim); white-space:nowrap;}
+  .tx-body{display:flex; flex-direction:column; gap:5px;}
+  .tx-roster-line{font-size:13.5px; line-height:1.5;}
+  .tx-roster-line b{font-weight:600;}
+  .tx-add{color:var(--win); font-weight:500;}
+  .tx-drop{color:var(--loss); font-weight:500;}
+
+  /* ---------- roster screen ---------- */
+  .roster-section-label{
+    font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;
+    color:var(--text-dim); padding:12px 18px 2px;
+  }
+
   /* ---------- modal ---------- */
   .modal-backdrop{
     position:fixed; inset:0; background:rgba(29,29,31,0.4);
@@ -475,6 +501,8 @@
   <div class="seg-nav" id="screen-nav">
     <button class="seg-tab active" data-screen="board">Board</button>
     <button class="seg-tab" data-screen="schedule">Schedule</button>
+    <button class="seg-tab" data-screen="roster">Roster</button>
+    <button class="seg-tab" data-screen="transactions">Roster Changes</button>
   </div>
 </div>
 
@@ -520,6 +548,26 @@
       <h2>Full schedule</h2>
       <p class="block-sub">Every matchup through the end of the regular season.</p>
       <div id="schedule-list"></div>
+    </section>
+  </main>
+</div>
+
+<div id="roster-screen" style="display:none;">
+  <main>
+    <section class="block">
+      <h2>Rosters</h2>
+      <p class="block-sub">Every team's current roster, starters and bench.</p>
+      <div id="roster-list"></div>
+    </section>
+  </main>
+</div>
+
+<div id="transactions-screen" style="display:none;">
+  <main>
+    <section class="block">
+      <h2>Roster changes</h2>
+      <p class="block-sub">Every waiver claim, free agent pickup, and trade this season.</p>
+      <div id="transactions-list"></div>
     </section>
   </main>
 </div>
@@ -575,6 +623,9 @@ const S = {
   currentUserId: "",
   isAdmin: false,
   matchupsCache: {},      // week -> [{matchupId, teamA, teamB}]
+  txCache: {},             // week -> [transaction, ...]
+  playersById: null,       // Sleeper's full player dictionary, fetched lazily
+  rosters: [],              // full Sleeper roster objects (players, starters, etc.)
   parlaysCache: {},       // week -> {userId: pickObj}
   scoreboard: {},         // userId -> total points
   builderLegs: [],        // legs currently selected in the open builder
@@ -607,6 +658,7 @@ async function loadLeagueMeta(){
 
   const rosterByOwner = {};
   rosters.forEach(r => { rosterByOwner[r.owner_id] = r.roster_id; });
+  S.rosters = rosters;
 
   S.users = users.map(u => ({
     userId: u.user_id,
@@ -649,6 +701,22 @@ async function loadMatchupsForWeek(week){
   matchups.sort((m1,m2)=>m1.matchupId-m2.matchupId);
   S.matchupsCache[week] = matchups;
   return matchups;
+}
+
+async function loadTransactionsForWeek(week){
+  if(S.txCache[week]) return S.txCache[week];
+  const raw = await sleeperGet(`league/${LEAGUE_ID}/transactions/${week}`);
+  const withWeek = raw.map(t=>({...t, _week: week}));
+  S.txCache[week] = withWeek;
+  return withWeek;
+}
+
+/* Sleeper's full NFL player dictionary — several MB, so this is only
+   fetched once, lazily, the first time the Transactions tab is opened. */
+async function loadPlayersMap(){
+  if(S.playersById) return S.playersById;
+  S.playersById = await sleeperGet(`players/nfl`);
+  return S.playersById;
 }
 
 function isWeekFinal(week){
@@ -953,6 +1021,48 @@ function bindEditLinks(matchups, parlays){
 /* =========================================================================
    RENDER: schedule screen (all weeks through the regular season)
    ========================================================================= */
+/* =========================================================================
+   RENDER: roster screen (every team's current players)
+   ========================================================================= */
+async function renderRosterScreen(){
+  const list = document.getElementById('roster-list');
+  list.innerHTML = `<p class="state-msg">Loading rosters… (first load can take a moment)</p>`;
+
+  const playersMap = await loadPlayersMap();
+  const rosterByRosterId = {};
+  S.rosters.forEach(r=>{ rosterByRosterId[r.roster_id] = r; });
+
+  const cards = S.users.map(u=>{
+    const r = rosterByRosterId[u.rosterId];
+    if(!r) return '';
+    const starterIds = (r.starters||[]).filter(pid=>pid && pid!=='0');
+    const allIds = r.players||[];
+    const benchIds = allIds.filter(pid=>!starterIds.includes(pid));
+
+    const starterHtml = starterIds.map(pid=>
+      `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span></div>`).join('');
+    const benchHtml = benchIds.map(pid=>
+      `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span></div>`).join('');
+
+    return `
+    <div class="ticket">
+      <div class="ticket-head">
+        ${ticketAvatar(u)}
+        <div>
+          <div class="team-name">${escapeHtml(u.teamName)}</div>
+          <div class="owner-name">${escapeHtml(u.ownerName)}</div>
+        </div>
+      </div>
+      <div class="roster-section-label">Starters</div>
+      <div class="legs">${starterHtml || '<div class="empty-slip">No starters set.</div>'}</div>
+      <div class="roster-section-label">Bench</div>
+      <div class="legs">${benchHtml || '<div class="empty-slip">No bench players.</div>'}</div>
+    </div>`;
+  }).join('');
+
+  list.innerHTML = `<div class="board-grid">${cards}</div>`;
+}
+
 async function renderScheduleScreen(){
   const list = document.getElementById('schedule-list');
   list.innerHTML = `<p class="state-msg">Loading schedule…</p>`;
@@ -978,6 +1088,79 @@ async function renderScheduleScreen(){
       </div>
     </div>`;
   }).join('') || `<p class="state-msg">No schedule found.</p>`;
+}
+
+/* =========================================================================
+   RENDER: transactions screen (waiver/free agent/trade log)
+   ========================================================================= */
+function playerLabel(playersMap, playerId){
+  const p = playersMap[playerId];
+  if(!p) return `Player ${playerId}`;
+  const name = p.full_name || `${p.first_name||''} ${p.last_name||''}`.trim() || `Player ${playerId}`;
+  const meta = [p.position, p.team].filter(Boolean).join(' · ');
+  return meta ? `${name} (${meta})` : name;
+}
+
+function renderTxRow(t, playersMap, nameByRoster){
+  const byRosterAdds = {};
+  const byRosterDrops = {};
+  Object.entries(t.adds||{}).forEach(([pid, rosterId])=>{
+    (byRosterAdds[rosterId] = byRosterAdds[rosterId]||[]).push(playerLabel(playersMap, pid));
+  });
+  Object.entries(t.drops||{}).forEach(([pid, rosterId])=>{
+    (byRosterDrops[rosterId] = byRosterDrops[rosterId]||[]).push(playerLabel(playersMap, pid));
+  });
+  const rosterIds = Array.from(new Set([...Object.keys(byRosterAdds), ...Object.keys(byRosterDrops)]));
+  if(rosterIds.length===0) return '';
+
+  const typeLabel = t.type==='trade' ? '🔁 Trade' : t.type==='waiver' ? '📥 Waiver' : '🆓 Free agent';
+  const dateStr = t.created ? new Date(t.created).toLocaleDateString(undefined, {month:'short', day:'numeric'}) : '';
+
+  const rosterLines = rosterIds.map(rid=>{
+    const adds = byRosterAdds[rid]||[];
+    const drops = byRosterDrops[rid]||[];
+    const parts = [];
+    if(adds.length) parts.push(`<span class="tx-add">+ ${adds.map(escapeHtml).join(', ')}</span>`);
+    if(drops.length) parts.push(`<span class="tx-drop">− ${drops.map(escapeHtml).join(', ')}</span>`);
+    return `<div class="tx-roster-line"><b>${escapeHtml(nameByRoster[rid]||'Unknown team')}</b> — ${parts.join(' &nbsp; ')}</div>`;
+  }).join('');
+
+  return `
+  <div class="tx-row">
+    <div class="tx-head">
+      <span class="tx-type">${typeLabel}</span>
+      <span class="tx-date">Week ${t._week}${dateStr?' · '+dateStr:''}</span>
+    </div>
+    <div class="tx-body">${rosterLines}</div>
+  </div>`;
+}
+
+async function renderTransactionsScreen(){
+  const list = document.getElementById('transactions-list');
+  list.innerHTML = `<p class="state-msg">Loading transactions… (first load can take a moment)</p>`;
+
+  const weeks = [];
+  for(let w=1; w<=S.nflWeek; w++) weeks.push(w);
+
+  const [playersMap, allTx] = await Promise.all([
+    loadPlayersMap(),
+    Promise.all(weeks.map(w=>loadTransactionsForWeek(w))),
+  ]);
+
+  const nameByRoster = {};
+  S.users.forEach(u=>{ nameByRoster[u.rosterId] = u.teamName; });
+
+  const txs = allTx.flat()
+    .filter(t=>t.status==='complete' && (t.adds || t.drops))
+    .sort((a,b)=> (b.created||0) - (a.created||0));
+
+  if(txs.length===0){
+    list.innerHTML = `<p class="state-msg">No roster moves yet this season.</p>`;
+    return;
+  }
+
+  list.innerHTML = txs.map(t=>renderTxRow(t, playersMap, nameByRoster)).join('') ||
+    `<p class="state-msg">No roster moves yet this season.</p>`;
 }
 
 /* =========================================================================
@@ -1238,7 +1421,11 @@ async function init(){
       S.screen = btn.dataset.screen;
       document.getElementById('board-screen').style.display = S.screen==='board' ? '' : 'none';
       document.getElementById('schedule-screen').style.display = S.screen==='schedule' ? '' : 'none';
+      document.getElementById('roster-screen').style.display = S.screen==='roster' ? '' : 'none';
+      document.getElementById('transactions-screen').style.display = S.screen==='transactions' ? '' : 'none';
       if(S.screen==='schedule') renderScheduleScreen();
+      if(S.screen==='roster') renderRosterScreen();
+      if(S.screen==='transactions') renderTransactionsScreen();
     });
   });
 
