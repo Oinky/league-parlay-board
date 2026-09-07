@@ -439,6 +439,8 @@
   .tx-roster-line b{font-weight:600;}
   .tx-add{color:var(--win); font-weight:500;}
   .tx-drop{color:var(--loss); font-weight:500;}
+  .tx-players .tx-player{display:inline;}
+  .tx-players .tx-player:not(:last-child)::after{content:", "; color:var(--text-dim); font-weight:400;}
 
   /* ---------- roster screen ---------- */
   .roster-section-label{
@@ -478,6 +480,10 @@
     .matchup-row .at{ font-size:10px; }
     .schedule-row{ grid-template-columns:1fr auto 1fr; }
     .sched-score{ display:none; }
+    .tx-roster-line{ display:flex; flex-direction:column; gap:2px; }
+    .tx-players{ display:flex; flex-direction:column; gap:2px; }
+    .tx-players .tx-player{ display:block; }
+    .tx-players .tx-player::after{ content:none; }
   }
 </style>
 </head>
@@ -1119,10 +1125,9 @@ function renderTxRow(t, playersMap, nameByRoster){
   const rosterLines = rosterIds.map(rid=>{
     const adds = byRosterAdds[rid]||[];
     const drops = byRosterDrops[rid]||[];
-    const parts = [];
-    if(adds.length) parts.push(`<span class="tx-add">+ ${adds.map(escapeHtml).join(', ')}</span>`);
-    if(drops.length) parts.push(`<span class="tx-drop">− ${drops.map(escapeHtml).join(', ')}</span>`);
-    return `<div class="tx-roster-line"><b>${escapeHtml(nameByRoster[rid]||'Unknown team')}</b> — ${parts.join(' &nbsp; ')}</div>`;
+    const addSpans = adds.map(name=>`<span class="tx-player tx-add">+ ${escapeHtml(name)}</span>`).join('');
+    const dropSpans = drops.map(name=>`<span class="tx-player tx-drop">− ${escapeHtml(name)}</span>`).join('');
+    return `<div class="tx-roster-line"><b>${escapeHtml(nameByRoster[rid]||'Unknown team')}</b> — <span class="tx-players">${addSpans}${dropSpans}</span></div>`;
   }).join('');
 
   return `
