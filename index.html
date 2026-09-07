@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The Parlay Board</title>
+<script>
+  // Set the theme before first paint to avoid a light-mode flash.
+  (function(){
+    try{
+      var t = localStorage.getItem('parlay-theme');
+      if(!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', t);
+    }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
+  })();
+</script>
 <style>
   :root{
     --bg:#F5F5F7;
@@ -26,6 +36,28 @@
     --radius-lg:18px;
     --radius-md:12px;
     --radius-sm:9px;
+  }
+  :root[data-theme="dark"]{
+    --bg:#000000;
+    --surface:#1C1C1E;
+    --surface-alt:#2C2C2E;
+    --border:#38383A;
+    --text:#F5F5F7;
+    --text-dim:#98989D;
+    --accent:#0A84FF;
+    --accent-hover:#409CFF;
+    --accent-soft:rgba(10,132,255,0.18);
+    --win:#30D158;
+    --win-soft:rgba(48,209,88,0.16);
+    --loss:#FF453A;
+    --loss-soft:rgba(255,69,58,0.16);
+    --warn:#FFD60A;
+    --warn-soft:rgba(255,214,10,0.14);
+    --shadow-sm:0 1px 2px rgba(0,0,0,0.4);
+    --shadow-md:0 2px 6px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.5);
+  }
+  :root[data-theme="dark"] body{
+    background:#000000;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
@@ -417,6 +449,7 @@
   </div>
   <div class="who-row">
     <select id="who-select"><option value="">Who are you?</option></select>
+    <button class="btn small" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">🌙</button>
     <button class="btn" id="admin-btn">Admin</button>
     <span class="admin-badge" id="admin-badge" style="display:none;">Admin mode</span>
   </div>
@@ -999,12 +1032,24 @@ function bindBuilder(matchups, parlays, forUserId, isAdminEdit){
     const btn = document.getElementById('submit-slip-btn');
     btn.disabled = true; btn.textContent = 'Locking in…';
 
+    const legsWithNames = S.builderLegs.map(l=>{
+      const m = matchups.find(mm=>mm.matchupId===l.matchupId);
+      const side = m.teamA.rosterId===l.rosterId ? m.teamA : m.teamB;
+      const opp  = m.teamA.rosterId===l.rosterId ? m.teamB : m.teamA;
+      return {matchupId:l.matchupId, rosterId:l.rosterId, teamName:side.name, opponentName:opp.name};
+    });
+
     const weekParlays = await loadParlaysForWeek(S.selectedWeek, true);
     weekParlays[forUserId] = {
-      legs: S.builderLegs,
-      legCount: S.builderLegs.length,
+      legs: legsWithNames,
+      legCount: legsWithNames.length,
       submittedAt: new Date().toISOString(),
       editedByAdmin: isAdminEdit,
+      season: S.season,
+      week: S.selectedWeek,
+      teamName: S.usersById[forUserId].teamName,
+      ownerName: S.usersById[forUserId].ownerName,
+      potentialPoints: POINTS_TABLE[legsWithNames.length] || 0,
     };
     await saveParlaysForWeek(S.selectedWeek, weekParlays);
     await renderWeekDependent();
@@ -1114,6 +1159,31 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* =========================================================================
+   THEME (light/dark toggle, persisted where possible)
+   ========================================================================= */
+function getStoredTheme(){
+  try{ return localStorage.getItem('parlay-theme'); }catch(e){ return null; }
+}
+function storeTheme(t){
+  try{ localStorage.setItem('parlay-theme', t); }catch(e){ /* ignore — theme just won't persist */ }
+}
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  const btn = document.getElementById('theme-toggle');
+  if(btn) btn.textContent = t==='dark' ? '☀️' : '🌙';
+}
+function initThemeToggle(){
+  // the <head> script already set data-theme before first paint —
+  // this just syncs the button icon and wires the click handler.
+  applyTheme(document.documentElement.getAttribute('data-theme') || 'light');
+  document.getElementById('theme-toggle').addEventListener('click', ()=>{
+    const next = document.documentElement.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+    applyTheme(next);
+    storeTheme(next);
+  });
+}
+
 async function fullReload(){
   await computeScoreboard();
   renderScoreboard();
@@ -1121,6 +1191,7 @@ async function fullReload(){
 }
 
 async function init(){
+  initThemeToggle();
   try{
     await loadLeagueMeta();
   }catch(e){
