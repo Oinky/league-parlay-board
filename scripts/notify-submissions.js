@@ -9,6 +9,45 @@ async function main() {
   const league = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}`)).json();
   const season = league.season;
 
+  // Fetch league membership once up front so we can fill in any names
+  // missing from the stored pick (e.g. parlays placed by an older
+  // version of the site, before team/opponent names were saved).
+  const [users, rosters] = await Promise.all([
+    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/users`)).json(),
+    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/rosters`)).json(),
+  ]);
+  const nameByUser = {};
+  users.forEach((u) => {
+    nameByUser[u.user_id] = (u.metadata && u.metadata.team_name) ? u.metadata.team_name : u.display_name;
+  });
+  const nameByRoster = {};
+  rosters.forEach((r) => {
+    nameByRoster[r.roster_id] = nameByUser[r.owner_id] || `Roster ${r.roster_id}`;
+  });
+
+  const matchupNameCache = {}; // week -> {matchupId -> {teamA:{rosterId,name}, teamB:{...}}}
+  async function matchupNamesForWeek(week) {
+    if (matchupNameCache[week]) return matchupNameCache[week];
+    const raw = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/matchups/${week}`)).json();
+    const byId = new Map();
+    raw.forEach((e) => {
+      if (e.matchup_id === null || e.matchup_id === undefined) return;
+      if (!byId.has(e.matchup_id)) byId.set(e.matchup_id, []);
+      byId.get(e.matchup_id).push(e);
+    });
+    const out = {};
+    byId.forEach((entries, matchupId) => {
+      if (entries.length !== 2) return;
+      const [a, b] = entries;
+      out[matchupId] = {
+        teamA: {rosterId: a.roster_id, name: nameByRoster[a.roster_id] || "Unknown team"},
+        teamB: {rosterId: b.roster_id, name: nameByRoster[b.roster_id] || "Unknown team"},
+      };
+    });
+    matchupNameCache[week] = out;
+    return out;
+  }
+
   const cursorDoc = await getDoc("botState/cursor");
   const lastNotifiedAt = (cursorDoc && cursorDoc.lastNotifiedAt) || "1970-01-01T00:00:00.000Z";
   let maxSeen = lastNotifiedAt;
@@ -21,11 +60,31 @@ async function main() {
       if (!pick || !pick.submittedAt || !Array.isArray(pick.legs)) continue;
       if (pick.submittedAt <= lastNotifiedAt) continue; // already notified last run
 
-      const legsList = pick.legs.map((l) => `• **${l.teamName}** (over ${l.opponentName})`).join("\n");
+      const teamName = pick.teamName || nameByUser[userId] || "Someone";
+
+      // Fill in any missing leg names from Sleeper's live matchups so old
+      // or incomplete pick data still renders a readable message.
+      const needsLookup = pick.legs.some((l) => !l.teamName || !l.opponentName);
+      const namesForWeek = needsLookup ? await matchupNamesForWeek(pick.week ?? week) : null;
+
+      const legsList = pick.legs.map((l) => {
+        let tn = l.teamName;
+        let on = l.opponentName;
+        if ((!tn || !on) && namesForWeek) {
+          const m = namesForWeek[l.matchupId];
+          if (m) {
+            const isA = m.teamA.rosterId === l.rosterId;
+            tn = tn || (isA ? m.teamA.name : m.teamB.name);
+            on = on || (isA ? m.teamB.name : m.teamA.name);
+          }
+        }
+        return `• **${tn || "Unknown team"}** (over ${on || "unknown opponent"})`;
+      }).join("\n");
+
       const potential = pick.potentialPoints ?? POINTS_TABLE[pick.legs.length] ?? "?";
       const verb = pick.editedByAdmin ? "updated (admin)" : "placed";
       const msg = [
-        `🎟️ **${pick.teamName || "Someone"}** ${verb} a parlay — Week ${pick.week ?? week}`,
+        `🎟️ **${teamName}** ${verb} a parlay — Week ${pick.week ?? week}`,
         legsList,
         `Potential: **${potential} pts** (${pick.legs.length}-leg, all-or-nothing)`,
       ].join("\n");
