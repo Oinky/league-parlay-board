@@ -665,6 +665,7 @@ const S = {
   playersById: null,       // Sleeper's full player dictionary, fetched lazily
   rosters: [],              // full Sleeper roster objects (players, starters, etc.)
   projCache: {},            // week -> {playerId: projectedPoints}
+  nflSchedule: null,        // week -> {teamAbbr: {opp, isHome}}, fetched once
   parlaysCache: {},       // week -> {userId: pickObj}
   scoreboard: {},         // userId -> total points
   builderLegs: [],        // legs currently selected in the open builder
@@ -784,6 +785,36 @@ async function loadProjectionsForWeek(week){
   }
   S.projCache[week] = map;
   return map;
+}
+
+/* Full NFL schedule for the season — same domain as our other Sleeper
+   calls, so more reliable than the projections endpoint. Fetched once
+   and cached for the whole session. */
+async function loadNflSchedule(){
+  if(S.nflSchedule) return S.nflSchedule;
+  const byWeek = {};
+  try{
+    const raw = await sleeperGet(`schedule/nfl/regular/${S.season}`);
+    raw.forEach(g=>{
+      if(!g || !g.week || !g.home || !g.away) return;
+      if(!byWeek[g.week]) byWeek[g.week] = {};
+      byWeek[g.week][g.home] = {opp: g.away, isHome: true};
+      byWeek[g.week][g.away] = {opp: g.home, isHome: false};
+    });
+  }catch(e){
+    console.error('NFL schedule unavailable, showing roster without opponents:', e);
+  }
+  S.nflSchedule = byWeek;
+  return byWeek;
+}
+
+function opponentText(schedule, week, teamAbbr){
+  if(!teamAbbr) return '';
+  const wk = schedule[week];
+  if(!wk) return '';
+  const info = wk[teamAbbr];
+  if(!info) return 'BYE';
+  return (info.isHome ? 'vs ' : '@ ') + info.opp;
 }
 
 function isWeekFinal(week){
@@ -1095,17 +1126,21 @@ async function renderRosterScreen(){
   const list = document.getElementById('roster-list');
   list.innerHTML = `<p class="state-msg">Loading rosters… (first load can take a moment)</p>`;
 
-  const [playersMap, projMap] = await Promise.all([
+  const [playersMap, projMap, schedule] = await Promise.all([
     loadPlayersMap(),
     loadProjectionsForWeek(S.nflWeek),
+    loadNflSchedule(),
   ]);
   const rosterByRosterId = {};
   S.rosters.forEach(r=>{ rosterByRosterId[r.roster_id] = r; });
 
   function projRowHtml(pid){
+    const p = playersMap[pid];
     const proj = projMap[pid];
     const projText = typeof proj === 'number' ? `${proj.toFixed(1)} proj` : '';
-    return `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span><span class="vs">${projText}</span></div>`;
+    const oppText = p ? opponentText(schedule, S.nflWeek, p.team) : '';
+    const metaText = [oppText, projText].filter(Boolean).join(' · ');
+    return `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span><span class="vs">${escapeHtml(metaText)}</span></div>`;
   }
 
   const cards = S.users.map(u=>{
