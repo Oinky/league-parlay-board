@@ -445,6 +445,12 @@
   .tx-players .tx-player:not(:last-child)::after{content:", "; color:var(--text-dim); font-weight:400;}
 
   /* ---------- roster screen ---------- */
+  .roster-total-row{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:12px 18px; border-bottom:1px solid var(--border);
+    font-size:13px; color:var(--text-dim);
+  }
+  .roster-total-pts{font-size:18px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums;}
   .roster-section-label{
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;
     color:var(--text-dim); padding:12px 18px 2px;
@@ -1111,6 +1117,11 @@ async function renderRosterScreen(){
 
     const starterHtml = starterIds.map(projRowHtml).join('');
     const benchHtml = benchIds.map(projRowHtml).join('');
+    const starterTotal = starterIds.reduce((sum,pid)=>{
+      const v = projMap[pid];
+      return sum + (typeof v==='number' ? v : 0);
+    }, 0);
+    const missingCount = starterIds.filter(pid=>typeof projMap[pid]!=='number').length;
 
     return `
     <div class="ticket">
@@ -1120,6 +1131,10 @@ async function renderRosterScreen(){
           <div class="team-name">${escapeHtml(u.teamName)}</div>
           <div class="owner-name">${escapeHtml(u.ownerName)}</div>
         </div>
+      </div>
+      <div class="roster-total-row">
+        <span>Projected starters total${missingCount ? ` (${missingCount} unavailable)` : ''}</span>
+        <span class="roster-total-pts">${starterTotal.toFixed(1)}</span>
       </div>
       <div class="roster-section-label">Starters · week ${S.nflWeek} projections</div>
       <div class="legs">${starterHtml || '<div class="empty-slip">No starters set.</div>'}</div>
