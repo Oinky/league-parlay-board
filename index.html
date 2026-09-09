@@ -794,7 +794,11 @@ async function loadNflSchedule(){
   if(S.nflSchedule) return S.nflSchedule;
   const byWeek = {};
   try{
-    const raw = await sleeperGet(`schedule/nfl/regular/${S.season}`);
+    // This endpoint lives at the API root, NOT under /v1/ like the rest
+    // of Sleeper's API — sleeperGet() would silently 404 here.
+    const res = await fetch(`https://api.sleeper.app/schedule/nfl/regular/${S.season}`);
+    if(!res.ok) throw new Error(`Schedule request failed: ${res.status}`);
+    const raw = await res.json();
     raw.forEach(g=>{
       if(!g || !g.week || !g.home || !g.away) return;
       if(!byWeek[g.week]) byWeek[g.week] = {};
