@@ -658,6 +658,7 @@ const S = {
   txCache: {},             // week -> [transaction, ...]
   playersById: null,       // Sleeper's full player dictionary, fetched lazily
   rosters: [],              // full Sleeper roster objects (players, starters, etc.)
+  projCache: {},            // week -> {playerId: projectedPoints}
   parlaysCache: {},       // week -> {userId: pickObj}
   scoreboard: {},         // userId -> total points
   builderLegs: [],        // legs currently selected in the open builder
@@ -749,6 +750,34 @@ async function loadPlayersMap(){
   if(S.playersById) return S.playersById;
   S.playersById = await sleeperGet(`players/nfl`);
   return S.playersById;
+}
+
+/* Weekly player projections — this hits an undocumented Sleeper endpoint
+   on a different domain, so it's wrapped defensively: any failure (CORS,
+   network, format change) just yields an empty map and projections are
+   silently omitted rather than breaking the Roster tab. Picks the PPR /
+   half-PPR / standard field that best matches this league's reception
+   scoring — not a full custom-scoring recalculation. */
+async function loadProjectionsForWeek(week){
+  if(S.projCache[week]) return S.projCache[week];
+  const map = {};
+  try{
+    const res = await fetch(`https://api.sleeper.com/projections/nfl/${S.season}/${week}?season_type=regular`);
+    if(!res.ok) throw new Error(`Projections request failed: ${res.status}`);
+    const raw = await res.json();
+    const recValue = (S.league && S.league.scoring_settings && typeof S.league.scoring_settings.rec === 'number')
+      ? S.league.scoring_settings.rec : 0;
+    const field = recValue >= 1 ? 'pts_ppr' : recValue >= 0.5 ? 'pts_half_ppr' : 'pts_std';
+    raw.forEach(p=>{
+      if(!p || !p.player_id || !p.stats) return;
+      const val = p.stats[field];
+      if(typeof val === 'number') map[p.player_id] = val;
+    });
+  }catch(e){
+    console.error('Projections unavailable, showing roster without them:', e);
+  }
+  S.projCache[week] = map;
+  return map;
 }
 
 function isWeekFinal(week){
@@ -1060,9 +1089,18 @@ async function renderRosterScreen(){
   const list = document.getElementById('roster-list');
   list.innerHTML = `<p class="state-msg">Loading rosters… (first load can take a moment)</p>`;
 
-  const playersMap = await loadPlayersMap();
+  const [playersMap, projMap] = await Promise.all([
+    loadPlayersMap(),
+    loadProjectionsForWeek(S.nflWeek),
+  ]);
   const rosterByRosterId = {};
   S.rosters.forEach(r=>{ rosterByRosterId[r.roster_id] = r; });
+
+  function projRowHtml(pid){
+    const proj = projMap[pid];
+    const projText = typeof proj === 'number' ? `${proj.toFixed(1)} proj` : '';
+    return `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span><span class="vs">${projText}</span></div>`;
+  }
 
   const cards = S.users.map(u=>{
     const r = rosterByRosterId[u.rosterId];
@@ -1071,10 +1109,8 @@ async function renderRosterScreen(){
     const allIds = r.players||[];
     const benchIds = allIds.filter(pid=>!starterIds.includes(pid));
 
-    const starterHtml = starterIds.map(pid=>
-      `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span></div>`).join('');
-    const benchHtml = benchIds.map(pid=>
-      `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span></div>`).join('');
+    const starterHtml = starterIds.map(projRowHtml).join('');
+    const benchHtml = benchIds.map(projRowHtml).join('');
 
     return `
     <div class="ticket">
@@ -1085,7 +1121,7 @@ async function renderRosterScreen(){
           <div class="owner-name">${escapeHtml(u.ownerName)}</div>
         </div>
       </div>
-      <div class="roster-section-label">Starters</div>
+      <div class="roster-section-label">Starters · week ${S.nflWeek} projections</div>
       <div class="legs">${starterHtml || '<div class="empty-slip">No starters set.</div>'}</div>
       <div class="roster-section-label">Bench</div>
       <div class="legs">${benchHtml || '<div class="empty-slip">No bench players.</div>'}</div>
