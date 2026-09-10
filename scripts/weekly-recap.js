@@ -3,33 +3,17 @@ const {getDoc, setDoc, postToDiscord} = require("./lib");
 const LEAGUE_ID = process.env.SLEEPER_LEAGUE_ID;
 const POINTS_TABLE = {2: 1, 3: 3, 4: 6, 5: 10, 6: 15};
 
-async function main() {
-  const nflState = await (await fetch("https://api.sleeper.app/v1/state/nfl")).json();
-  const justFinishedWeek = (nflState.week || 1) - 1;
-  if (justFinishedWeek < 1) {
-    console.log("No completed week yet.");
-    return;
-  }
-
-  const league = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}`)).json();
-  const season = league.season;
-
-  const posted = await getDoc(`summaryPosted/${season}_${justFinishedWeek}`);
+async function recapWeek(season, week, nameByUser) {
+  const posted = await getDoc(`summaryPosted/${season}_${week}`);
   if (posted) {
-    console.log(`Week ${justFinishedWeek} recap already posted.`);
+    console.log(`Week ${week} recap already posted — skipping.`);
     return;
   }
 
-  const [users, rawMatchups, parlays] = await Promise.all([
-    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/users`)).json(),
-    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/matchups/${justFinishedWeek}`)).json(),
-    getDoc(`parlays/${season}_${justFinishedWeek}`),
+  const [rawMatchups, parlays] = await Promise.all([
+    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/matchups/${week}`)).json(),
+    getDoc(`parlays/${season}_${week}`),
   ]);
-
-  const nameByUser = {};
-  users.forEach((u) => {
-    nameByUser[u.user_id] = (u.metadata && u.metadata.team_name) ? u.metadata.team_name : u.display_name;
-  });
 
   const byMatchup = new Map();
   rawMatchups.forEach((e) => {
@@ -65,15 +49,42 @@ async function main() {
   }).sort((a, b) => b.pts - a.pts);
 
   if (results.length === 0) {
-    await postToDiscord(`📋 **Week ${justFinishedWeek} recap** — nobody placed a parlay this week.`);
+    await postToDiscord(`📋 **Week ${week} recap** — nobody placed a parlay this week.`);
   } else {
     const lines = results.map((r) =>
       `${r.hit ? "✅" : "❌"} **${r.teamName}** — ${r.legCount}-leg — ${r.pts} pt${r.pts === 1 ? "" : "s"}`,
     );
-    await postToDiscord([`📋 **Week ${justFinishedWeek} recap**`, ...lines].join("\n"));
+    await postToDiscord([`📋 **Week ${week} recap**`, ...lines].join("\n"));
   }
 
-  await setDoc(`summaryPosted/${season}_${justFinishedWeek}`, {postedAt: new Date().toISOString()});
+  await setDoc(`summaryPosted/${season}_${week}`, {postedAt: new Date().toISOString()});
+  console.log(`Posted week ${week} recap.`);
+}
+
+async function main() {
+  const nflState = await (await fetch("https://api.sleeper.app/v1/state/nfl")).json();
+  const lastCompletedWeek = (nflState.week || 1) - 1;
+  if (lastCompletedWeek < 1) {
+    console.log("No completed week yet.");
+    return;
+  }
+
+  const league = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}`)).json();
+  const season = league.season;
+
+  const users = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/users`)).json();
+  const nameByUser = {};
+  users.forEach((u) => {
+    nameByUser[u.user_id] = (u.metadata && u.metadata.team_name) ? u.metadata.team_name : u.display_name;
+  });
+
+  // Walk every completed week, not just the most recent one — if a
+  // scheduled run gets skipped entirely (GitHub's cron has been known to
+  // do this), the next successful run still catches up on what was missed
+  // instead of silently leaving a week unrecapped forever.
+  for (let week = 1; week <= lastCompletedWeek; week++) {
+    await recapWeek(season, week, nameByUser);
+  }
 }
 
 main().catch((err) => {

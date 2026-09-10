@@ -73,4 +73,16 @@ async function postToDiscord(content) {
   if (!res.ok) console.error("Discord post failed", res.status, await res.text());
 }
 
-module.exports = {getDoc, setDoc, postToDiscord};
+async function postFileToDiscord(buffer, filename, content) {
+  if (!WEBHOOK_URL) {
+    console.error("DISCORD_WEBHOOK_URL is not set");
+    return;
+  }
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({content: content || ""}));
+  form.append("file", new Blob([buffer], {type: "image/png"}), filename);
+  const res = await fetch(WEBHOOK_URL, {method: "POST", body: form});
+  if (!res.ok) console.error("Discord file post failed", res.status, await res.text());
+}
+
+module.exports = {getDoc, setDoc, postToDiscord, postFileToDiscord};
