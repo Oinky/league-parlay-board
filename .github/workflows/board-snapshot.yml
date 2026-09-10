@@ -47,4 +47,4 @@ jobs:
           SLEEPER_LEAGUE_ID: "1389693561678606336"
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           # EDIT THIS to your actual GitHub Pages URL before deploying.
-          SITE_URL: "https://YOUR_USERNAME.github.io/YOUR_REPO/"
+          SITE_URL: "https://oinky.github.io/league-parlay-board/"
