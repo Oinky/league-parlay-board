@@ -381,6 +381,8 @@
     text-align:center; font-size:11.5px; color:var(--text-dim); font-weight:600;
     flex:0 0 auto;
   }
+  .side-extra{display:block; font-size:10px; color:var(--text-dim); margin-top:2px; font-weight:500;}
+  .side-faded{color:var(--warn); font-weight:700;}
   .builder-warn{
     font-size:13px; color:var(--loss); background:var(--loss-soft);
     border-radius:var(--radius-sm); padding:10px 13px; margin-top:12px;
@@ -455,6 +457,20 @@
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;
     color:var(--text-dim); padding:12px 18px 2px;
   }
+  .pos-badge{
+    display:inline-block; font-size:10px; font-weight:700; line-height:1;
+    padding:3px 6px; border-radius:4px; color:#fff; margin-right:7px;
+    vertical-align:middle; letter-spacing:0.02em;
+  }
+  .pos-QB{background:#EF4B4B;}
+  .pos-RB{background:#3CB878;}
+  .pos-WR{background:#4B9CE2;}
+  .pos-TE{background:#F0923A;}
+  .pos-K{background:#9B6FE0;}
+  .pos-DEF{background:#8A93A0;}
+  .pos-IDP{background:#B08D57;}
+  .pos-default{background:var(--text-dim);}
+  .player-team{color:var(--text-dim); font-weight:500; font-size:12px;}
 
   /* ---------- modal ---------- */
   .modal-backdrop{
@@ -670,6 +686,7 @@ const S = {
   scoreboard: {},         // userId -> total points
   builderLegs: [],        // legs currently selected in the open builder
   builderTarget: null,    // userId the open builder is editing
+  builderPrevContext: null, // {pointsByRoster, fadedRosterIds} for the previous week, or null
   loaded:false,
 };
 
@@ -969,7 +986,7 @@ async function renderWeekDependent(){
     loadParlaysForWeek(S.selectedWeek),
   ]);
 
-  renderYourSlip(matchups, parlays);
+  await renderYourSlip(matchups, parlays);
   renderBoardGrid(matchups, parlays);
 }
 
@@ -1049,7 +1066,7 @@ function renderTicketFor(userId, matchups, parlays, {allowEdit=false} = {}){
   </div>`;
 }
 
-function renderYourSlip(matchups, parlays){
+async function renderYourSlip(matchups, parlays){
   const title = document.getElementById('your-slip-title');
   const sub = document.getElementById('your-slip-sub');
   const box = document.getElementById('your-slip');
@@ -1090,6 +1107,7 @@ function renderYourSlip(matchups, parlays){
   }
 
   sub.textContent = 'Pick 2 to 6 winners. Get every leg right to score.';
+  S.builderPrevContext = S.selectedWeek >= 2 ? await getPrevWeekContext(S.selectedWeek - 1, S.currentUserId) : null;
   box.innerHTML = renderBuilder(matchups, S.currentUserId);
   bindBuilder(matchups, parlays, S.currentUserId, false);
 }
@@ -1126,6 +1144,18 @@ function bindEditLinks(matchups, parlays){
 /* =========================================================================
    RENDER: roster screen (every team's current players)
    ========================================================================= */
+/* Close approximations of Sleeper's own position colors — Sleeper doesn't
+   publish an official palette, so these are matched by eye to the app. */
+const POSITION_COLOR_CLASS = {
+  QB:'pos-QB', RB:'pos-RB', WR:'pos-WR', TE:'pos-TE',
+  K:'pos-K', DEF:'pos-DEF', DL:'pos-IDP', LB:'pos-IDP', DB:'pos-IDP',
+};
+function positionBadgeHtml(pos){
+  if(!pos) return '';
+  const cls = POSITION_COLOR_CLASS[pos] || 'pos-default';
+  return `<span class="pos-badge ${cls}">${escapeHtml(pos)}</span>`;
+}
+
 async function renderRosterScreen(){
   const list = document.getElementById('roster-list');
   list.innerHTML = `<p class="state-msg">Loading rosters… (first load can take a moment)</p>`;
@@ -1140,11 +1170,13 @@ async function renderRosterScreen(){
 
   function projRowHtml(pid){
     const p = playersMap[pid];
+    const name = p ? (p.full_name || `${p.first_name||''} ${p.last_name||''}`.trim() || `Player ${pid}`) : `Player ${pid}`;
+    const teamText = p && p.team ? ` <span class="player-team">${escapeHtml(p.team)}</span>` : '';
     const proj = projMap[pid];
     const projText = typeof proj === 'number' ? `${proj.toFixed(1)} proj` : '';
     const oppText = p ? opponentText(schedule, S.nflWeek, p.team) : '';
     const metaText = [oppText, projText].filter(Boolean).join(' · ');
-    return `<div class="leg-row"><span class="pick">${escapeHtml(playerLabel(playersMap, pid))}</span><span class="vs">${escapeHtml(metaText)}</span></div>`;
+    return `<div class="leg-row"><span class="pick">${positionBadgeHtml(p && p.position)}${escapeHtml(name)}${teamText}</span><span class="vs">${escapeHtml(metaText)}</span></div>`;
   }
 
   const cards = S.users.map(u=>{
@@ -1290,6 +1322,34 @@ async function renderTransactionsScreen(){
 /* =========================================================================
    BUILDER (slip-picking UI)
    ========================================================================= */
+
+/* Gathers, for the previous week: each roster's points scored, and which
+   rosters this specific user picked against (i.e. implicitly "picked to
+   lose" by choosing their opponent in a parlay leg). Used to show context
+   while building this week's slip, starting week 2. */
+async function getPrevWeekContext(prevWeek, forUserId){
+  const [prevMatchups, prevParlays] = await Promise.all([
+    loadMatchupsForWeek(prevWeek),
+    loadParlaysForWeek(prevWeek),
+  ]);
+  const pointsByRoster = {};
+  prevMatchups.forEach(m=>{
+    if(typeof m.teamA.points==='number') pointsByRoster[m.teamA.rosterId] = m.teamA.points;
+    if(typeof m.teamB.points==='number') pointsByRoster[m.teamB.rosterId] = m.teamB.points;
+  });
+  const fadedRosterIds = new Set();
+  const myPrevPick = prevParlays[forUserId];
+  if(myPrevPick && Array.isArray(myPrevPick.legs)){
+    myPrevPick.legs.forEach(leg=>{
+      const m = prevMatchups.find(mm=>mm.matchupId===leg.matchupId);
+      if(!m) return;
+      const oppSide = m.teamA.rosterId===leg.rosterId ? m.teamB : m.teamA;
+      fadedRosterIds.add(oppSide.rosterId);
+    });
+  }
+  return {pointsByRoster, fadedRosterIds};
+}
+
 function renderBuilder(matchups, forUserId, prefillLegs){
   S.builderLegs = prefillLegs ? [...prefillLegs] : [];
   S.builderTarget = forUserId;
@@ -1310,6 +1370,16 @@ function renderBuilder(matchups, forUserId, prefillLegs){
   </div>`;
 }
 
+function sideExtraHtml(side){
+  const ctx = S.builderPrevContext;
+  if(!ctx) return '';
+  let html = '';
+  const pts = ctx.pointsByRoster[side.rosterId];
+  if(typeof pts==='number') html += `<span class="side-extra">${pts.toFixed(1)} pts last wk</span>`;
+  if(ctx.fadedRosterIds.has(side.rosterId)) html += `<span class="side-extra side-faded">You picked them to lose last wk</span>`;
+  return html;
+}
+
 function matchupRowHtml(m, ownMid){
   const isOwn = m.matchupId===ownMid;
   const aSel = S.builderLegs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamA.rosterId);
@@ -1317,11 +1387,11 @@ function matchupRowHtml(m, ownMid){
   return `
   <div class="matchup-row" data-matchup="${m.matchupId}">
     <button class="side-btn ${aSel?'selected':''}" data-matchup="${m.matchupId}" data-roster="${m.teamA.rosterId}">
-      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamA.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}</span>
+      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamA.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}${sideExtraHtml(m.teamA)}</span>
     </button>
     <span class="at">vs</span>
     <button class="side-btn ${bSel?'selected':''}" data-matchup="${m.matchupId}" data-roster="${m.teamB.rosterId}">
-      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamB.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}</span>
+      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamB.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}${sideExtraHtml(m.teamB)}</span>
     </button>
   </div>`;
 }
@@ -1400,8 +1470,9 @@ function validateLegs(legs, ownMid){
 }
 
 /* Admin: open a builder for any user, in a modal */
-function openAdminBuilder(matchups, parlays, targetUserId){
+async function openAdminBuilder(matchups, parlays, targetUserId){
   const existing = parlays[targetUserId];
+  S.builderPrevContext = S.selectedWeek >= 2 ? await getPrevWeekContext(S.selectedWeek - 1, targetUserId) : null;
   const html = renderBuilder(matchups, targetUserId, existing ? existing.legs : []);
   const wrap = document.createElement('div');
   wrap.className = 'modal-backdrop';
