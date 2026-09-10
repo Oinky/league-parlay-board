@@ -572,7 +572,7 @@
       <div id="your-slip"></div>
     </section>
 
-    <section class="block">
+    <section class="block" id="board-section">
       <h2>This week's board</h2>
       <p class="block-sub">Every locked slip in the league, in one place.</p>
       <div class="board-grid" id="board-grid"></div>
@@ -1377,7 +1377,9 @@ function bindBuilder(matchups, parlays, forUserId, isAdminEdit){
       potentialPoints: POINTS_TABLE[legsWithNames.length] || 0,
     };
     await saveParlaysForWeek(S.selectedWeek, weekParlays);
-    await renderWeekDependent();
+    // Admin edits are often correcting a past, already-scored week — a
+    // plain re-render wouldn't pick that up in the standings table above.
+    if(isAdminEdit){ await fullReload(); } else { await renderWeekDependent(); }
   });
 }
 
@@ -1440,7 +1442,7 @@ function openDeleteConfirm(userId, week){
     btn.disabled = true; btn.textContent = 'Deleting…';
     await deleteParlay(userId, week);
     wrap.remove();
-    await renderWeekDependent();
+    await fullReload();
   });
 }
 
