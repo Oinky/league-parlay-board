@@ -1,0 +1,50 @@
+name: Post board snapshot before kickoff
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Cheap: two small API calls, no browser. Runs every 5 minutes.
+      - name: Check whether kickoff is close
+        id: check
+        run: node scripts/check-kickoff.js
+        env:
+          FIREBASE_PROJECT_ID: fantasy-parlay
+          SLEEPER_LEAGUE_ID: "1389693561678606336"
+
+      # Everything below only runs on the ~1 execution per week where
+      # check-kickoff.js says it's time.
+      - name: Cache Playwright browser
+        if: steps.check.outputs.should_run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
+      - name: Install dependencies
+        if: steps.check.outputs.should_run == 'true'
+        run: npm install
+
+      - name: Install Playwright's browser
+        if: steps.check.outputs.should_run == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Screenshot the board and post to Discord
+        if: steps.check.outputs.should_run == 'true'
+        run: node scripts/post-board-snapshot.js
+        env:
+          FIREBASE_PROJECT_ID: fantasy-parlay
+          SLEEPER_LEAGUE_ID: "1389693561678606336"
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # EDIT THIS to your actual GitHub Pages URL before deploying.
+          SITE_URL: "https://YOUR_USERNAME.github.io/YOUR_REPO/"
