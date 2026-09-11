@@ -453,6 +453,31 @@
     font-size:13px; color:var(--text-dim);
   }
   .roster-total-pts{font-size:18px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums;}
+
+  /* ---------- pick percentages ---------- */
+  .pick-pct-row{margin-bottom:14px;}
+  .pick-pct-row:last-child{margin-bottom:0;}
+  .pick-pct-label{display:flex; justify-content:space-between; font-size:13px; margin-bottom:5px; gap:8px;}
+  .pick-pct-label .name{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .pick-pct-label .pct{color:var(--text-dim); font-variant-numeric:tabular-nums; flex:0 0 auto;}
+  .pick-pct-bar{height:8px; background:var(--surface-alt); border-radius:4px; overflow:hidden;}
+  .pick-pct-fill{height:100%; background:var(--accent);}
+
+  /* ---------- loading skeletons ---------- */
+  @keyframes skeleton-shimmer{ 0%{background-position:-300px 0;} 100%{background-position:300px 0;} }
+  .skeleton-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+    padding:18px; box-shadow:var(--shadow-sm);
+  }
+  .skeleton-line{
+    height:12px; border-radius:6px; margin-bottom:12px;
+    background:linear-gradient(90deg, var(--surface-alt) 25%, var(--border) 37%, var(--surface-alt) 63%);
+    background-size:300px 100%;
+    animation:skeleton-shimmer 1.4s ease infinite;
+  }
+  .skeleton-line:last-child{margin-bottom:0;}
+  .skeleton-title{width:55%; height:16px;}
+  .skeleton-line.short{width:40%;}
   .roster-section-label{
     font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em;
     color:var(--text-dim); padding:12px 18px 2px;
@@ -557,6 +582,7 @@
     <button class="seg-tab" data-screen="schedule">Schedule</button>
     <button class="seg-tab" data-screen="roster">Roster</button>
     <button class="seg-tab" data-screen="transactions">Transactions</button>
+    <button class="seg-tab" data-screen="stats">Stats</button>
   </div>
 </div>
 
@@ -564,7 +590,10 @@
   <div class="scoreboard-wrap">
     <p class="scoreboard-label">
       <span>Season standings</span>
-      <button class="btn small" id="refresh-btn">Refresh scores</button>
+      <span style="display:flex; gap:8px;">
+        <button class="btn small" id="refresh-btn">Refresh scores</button>
+        <button class="btn small" id="export-csv-btn">Export season (CSV)</button>
+      </span>
     </p>
     <div class="table-wrap">
       <table class="scoreboard-table">
@@ -587,6 +616,8 @@
       <p class="block-sub" id="your-slip-sub">Pick who you are to place or view your parlay.</p>
       <div id="your-slip"></div>
     </section>
+
+    <div id="pick-pct-section"></div>
 
     <section class="block" id="board-section">
       <h2>This week's board</h2>
@@ -624,6 +655,10 @@
       <div id="transactions-list"></div>
     </section>
   </main>
+</div>
+
+<div id="stats-screen" style="display:none;">
+  <main id="stats-list"></main>
 </div>
 
 <footer class="pagefoot">Scoring &amp; matchups pulled live from Sleeper. Points: 2 legs=1 · 3=3 · 4=6 · 5=10 · 6=15, all legs must hit. Picks close once any team has scored, and open only once the prior week is final.</footer>
@@ -687,6 +722,9 @@ const S = {
   builderLegs: [],        // legs currently selected in the open builder
   builderTarget: null,    // userId the open builder is editing
   builderPrevContext: null, // {pointsByRoster, fadedRosterIds} for the previous week, or null
+  seasonHistory: {},        // userId -> [{week, pts, hit}] in week order
+  fadeByTeam: {},           // rosterId -> times picked against (faded)
+  fadeByUser: {},           // userId -> {rosterId: count}
   loaded:false,
 };
 
@@ -900,24 +938,128 @@ function scoreParlay(pick, matchups){
 
 async function computeScoreboard(){
   const totals = {};
-  S.users.forEach(u=>totals[u.userId] = {points:0, hits:0, plays:0});
+  const history = {};   // userId -> [{week, pts, hit}], filled in week order
+  const fadeByTeam = {}; // rosterId -> times picked against
+  const fadeByUser = {}; // userId -> {rosterId: count}
+  S.users.forEach(u=>{
+    totals[u.userId] = {points:0, hits:0, plays:0};
+    history[u.userId] = [];
+    fadeByUser[u.userId] = {};
+  });
+
   const lastCompleted = S.nflWeek - 1;
   const weeks = [];
   for(let w=1; w<=Math.max(lastCompleted,0); w++) weeks.push(w);
 
-  await Promise.all(weeks.map(async w=>{
+  // Fetch every week in parallel, but process results afterward in week
+  // order (Promise.all preserves input order) so streak history stays
+  // chronological regardless of which fetch finishes first.
+  const weekData = await Promise.all(weeks.map(async w=>{
     const [parlays, matchups] = await Promise.all([loadParlaysForWeek(w), loadMatchupsForWeek(w)]);
+    return {week:w, parlays, matchups};
+  }));
+
+  weekData.forEach(({week, parlays, matchups})=>{
     Object.entries(parlays).forEach(([userId, pick])=>{
       if(!totals[userId]) totals[userId] = {points:0, hits:0, plays:0};
+      if(!history[userId]) history[userId] = [];
+      if(!fadeByUser[userId]) fadeByUser[userId] = {};
+
       const pts = scoreParlay(pick, matchups);
       if(pts !== null){
         totals[userId].points += pts;
         totals[userId].plays += 1;
         if(pts>0) totals[userId].hits += 1;
+        history[userId].push({week, pts, hit: pts>0});
+      }
+
+      if(Array.isArray(pick.legs)){
+        pick.legs.forEach(leg=>{
+          const m = matchups.find(mm=>mm.matchupId===leg.matchupId);
+          if(!m) return;
+          const oppSide = m.teamA.rosterId===leg.rosterId ? m.teamB : m.teamA;
+          fadeByTeam[oppSide.rosterId] = (fadeByTeam[oppSide.rosterId]||0) + 1;
+          fadeByUser[userId][oppSide.rosterId] = (fadeByUser[userId][oppSide.rosterId]||0) + 1;
+        });
       }
     });
-  }));
+  });
+
   S.scoreboard = totals;
+  S.seasonHistory = history;
+  S.fadeByTeam = fadeByTeam;
+  S.fadeByUser = fadeByUser;
+}
+
+function computeStreaks(historyArr){
+  let longest=0, run=0;
+  (historyArr||[]).forEach(h=>{
+    if(h.hit){ run+=1; longest=Math.max(longest,run); } else { run=0; }
+  });
+  let current=0;
+  for(let i=(historyArr||[]).length-1; i>=0; i--){
+    if(historyArr[i].hit) current+=1; else break;
+  }
+  const bestWeek = (historyArr||[]).reduce((best,h)=> h.pts>best ? h.pts : best, 0);
+  return {current, longest, bestWeek};
+}
+
+function renderStatsScreen(){
+  const box = document.getElementById('stats-list');
+
+  const streakRows = S.users.map(u=>{
+    const hist = S.seasonHistory[u.userId] || [];
+    const {current, longest, bestWeek} = computeStreaks(hist);
+    return {u, current, longest, bestWeek, plays: hist.length};
+  }).sort((a,b)=> b.current - a.current || b.longest - a.longest);
+
+  const fadeRows = S.users.map(u=>({
+    u, count: S.fadeByTeam[u.rosterId] || 0,
+  })).filter(r=>r.count>0).sort((a,b)=> b.count - a.count);
+
+  const hasAnyPlays = streakRows.some(r=>r.plays>0);
+
+  const streaksHtml = !hasAnyPlays ? `<p class="state-msg">No scored weeks yet this season.</p>` : `
+    <div class="table-wrap">
+      <table class="scoreboard-table">
+        <thead><tr><th>Team</th><th style="text-align:right;">Current streak</th><th style="text-align:right;">Longest streak</th><th style="text-align:right;">Best week</th></tr></thead>
+        <tbody>
+          ${streakRows.map(r=>`
+            <tr>
+              <td><div class="team-cell-inner">${ticketAvatar(r.u,'sm')}<div class="team-name">${escapeHtml(r.u.teamName)}</div></div></td>
+              <td class="pts-cell">${r.current>0 ? '🔥 '+r.current : '—'}</td>
+              <td class="record-cell">${r.longest}</td>
+              <td class="record-cell">${r.bestWeek} pts</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  const fadeHtml = fadeRows.length===0 ? `<p class="state-msg">No picks scored yet this season.</p>` : `
+    <div class="table-wrap">
+      <table class="scoreboard-table">
+        <thead><tr><th>Team</th><th style="text-align:right;">Times picked against</th></tr></thead>
+        <tbody>
+          ${fadeRows.map(r=>`
+            <tr>
+              <td><div class="team-cell-inner">${ticketAvatar(r.u,'sm')}<div class="team-name">${escapeHtml(r.u.teamName)}</div></div></td>
+              <td class="pts-cell">${r.count}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  box.innerHTML = `
+    <section class="block">
+      <h2>Streaks &amp; records</h2>
+      <p class="block-sub">Current pick streaks, longest runs, and best single-week scores.</p>
+      ${streaksHtml}
+    </section>
+    <section class="block">
+      <h2>Most faded teams</h2>
+      <p class="block-sub">Whoever the league has picked against the most this season.</p>
+      ${fadeHtml}
+    </section>`;
 }
 
 /* =========================================================================
@@ -978,8 +1120,9 @@ function renderWeekSelect(){
    ========================================================================= */
 async function renderWeekDependent(){
   renderWeekSelect();
-  document.getElementById('your-slip').innerHTML = `<p class="state-msg">Loading week ${S.selectedWeek}…</p>`;
+  document.getElementById('your-slip').innerHTML = skeletonCardHtml(3);
   document.getElementById('board-grid').innerHTML = '';
+  document.getElementById('pick-pct-section').innerHTML = '';
 
   const [matchups, parlays] = await Promise.all([
     loadMatchupsForWeek(S.selectedWeek),
@@ -987,7 +1130,47 @@ async function renderWeekDependent(){
   ]);
 
   await renderYourSlip(matchups, parlays);
+  renderPickPercentages(matchups, parlays);
   renderBoardGrid(matchups, parlays);
+}
+
+function renderPickPercentages(matchups, parlays){
+  const box = document.getElementById('pick-pct-section');
+  const locked = weekHasStarted(matchups) || isWeekFinal(S.selectedWeek);
+  if(!locked){ box.innerHTML = ''; return; }
+
+  const allPicks = Object.values(parlays).filter(p=>p && Array.isArray(p.legs));
+  const rows = matchups.map(m=>{
+    let aCount=0, bCount=0;
+    allPicks.forEach(pick=>{
+      const leg = pick.legs.find(l=>l.matchupId===m.matchupId);
+      if(!leg) return;
+      if(leg.rosterId===m.teamA.rosterId) aCount++;
+      else if(leg.rosterId===m.teamB.rosterId) bCount++;
+    });
+    const total = aCount+bCount;
+    if(total===0) return '';
+    const aPct = Math.round((aCount/total)*100);
+    const bPct = 100-aPct;
+    return `
+    <div class="pick-pct-row">
+      <div class="pick-pct-label">
+        <span class="name">${escapeHtml(m.teamA.name)}</span>
+        <span class="pct">${aPct}% · ${bPct}%</span>
+        <span class="name" style="text-align:right;">${escapeHtml(m.teamB.name)}</span>
+      </div>
+      <div class="pick-pct-bar"><div class="pick-pct-fill" style="width:${aPct}%"></div></div>
+    </div>`;
+  }).filter(Boolean).join('');
+
+  if(!rows){ box.innerHTML = ''; return; }
+
+  box.innerHTML = `
+  <section class="block">
+    <h2>Pick percentages</h2>
+    <p class="block-sub">Who the league is backing in each matchup this week.</p>
+    <div class="pick-pct-list">${rows}</div>
+  </section>`;
 }
 
 function ownMatchupIdFor(userId, matchups){
@@ -1158,7 +1341,7 @@ function positionBadgeHtml(pos){
 
 async function renderRosterScreen(){
   const list = document.getElementById('roster-list');
-  list.innerHTML = `<p class="state-msg">Loading rosters… (first load can take a moment)</p>`;
+  list.innerHTML = skeletonGridHtml(6, 5);
 
   const [playersMap, projMap, schedule] = await Promise.all([
     loadPlayersMap(),
@@ -1219,7 +1402,7 @@ async function renderRosterScreen(){
 
 async function renderScheduleScreen(){
   const list = document.getElementById('schedule-list');
-  list.innerHTML = `<p class="state-msg">Loading schedule…</p>`;
+  list.innerHTML = skeletonCardHtml(6);
 
   const weeks = [];
   for(let w=1; w<=S.regularWeeks; w++) weeks.push(w);
@@ -1293,7 +1476,7 @@ function renderTxRow(t, playersMap, nameByRoster){
 
 async function renderTransactionsScreen(){
   const list = document.getElementById('transactions-list');
-  list.innerHTML = `<p class="state-msg">Loading transactions… (first load can take a moment)</p>`;
+  list.innerHTML = skeletonCardHtml(3) + skeletonCardHtml(3) + skeletonCardHtml(3);
 
   const weeks = [];
   for(let w=1; w<=S.nflWeek; w++) weeks.push(w);
@@ -1557,6 +1740,22 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function skeletonCardHtml(lines){
+  lines = lines || 4;
+  let inner = '<div class="skeleton-line skeleton-title"></div>';
+  for(let i=0;i<lines;i++){
+    inner += `<div class="skeleton-line${i===lines-1?' short':''}"></div>`;
+  }
+  return `<div class="skeleton-card">${inner}</div>`;
+}
+function skeletonGridHtml(count, lines){
+  count = count || 4;
+  let html = '<div class="board-grid">';
+  for(let i=0;i<count;i++) html += skeletonCardHtml(lines);
+  html += '</div>';
+  return html;
+}
+
 /* =========================================================================
    THEME (light/dark toggle, persisted where possible)
    ========================================================================= */
@@ -1580,6 +1779,53 @@ function initThemeToggle(){
     applyTheme(next);
     storeTheme(next);
   });
+}
+
+function csvEscape(val){
+  const s = String(val===null||val===undefined ? '' : val);
+  if(/[",\n]/.test(s)) return `"${s.replace(/"/g,'""')}"`;
+  return s;
+}
+
+async function buildSeasonCsvRows(){
+  const rows = [['Week','Team','Owner','Legs','LegCount','Result','Points']];
+  for(let w=1; w<=S.regularWeeks; w++){
+    const [parlays, matchups] = await Promise.all([loadParlaysForWeek(w), loadMatchupsForWeek(w)]);
+    const final = isWeekFinal(w);
+    Object.entries(parlays).forEach(([userId, pick])=>{
+      const u = S.usersById[userId];
+      if(!u || !Array.isArray(pick.legs)) return;
+      const legsStr = pick.legs.map(l=>`${l.teamName||'?'} over ${l.opponentName||'?'}`).join('; ');
+      const pts = final ? scoreParlay(pick, matchups) : null;
+      const result = pts===null ? 'Pending' : (pts>0 ? 'Hit' : 'Miss');
+      rows.push([w, u.teamName, u.ownerName, legsStr, pick.legs.length, result, pts===null ? '' : pts]);
+    });
+  }
+  return rows;
+}
+
+async function exportSeasonCsv(){
+  const btn = document.getElementById('export-csv-btn');
+  const origText = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Exporting…';
+  try{
+    const rows = await buildSeasonCsvRows();
+    const csv = rows.map(r=>r.map(csvEscape).join(',')).join('\r\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `parlay-season-${S.season}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }catch(e){
+    console.error('CSV export failed:', e);
+    alert('Export failed — check the browser console for details.');
+  }finally{
+    btn.disabled = false; btn.textContent = origText;
+  }
 }
 
 async function fullReload(){
@@ -1607,6 +1853,7 @@ async function init(){
     S.matchupsCache = {};
     fullReload();
   });
+  document.getElementById('export-csv-btn').addEventListener('click', exportSeasonCsv);
   document.getElementById('week-select').addEventListener('change', e=>{
     S.selectedWeek = parseInt(e.target.value,10);
     renderWeekDependent();
@@ -1620,9 +1867,11 @@ async function init(){
       document.getElementById('schedule-screen').style.display = S.screen==='schedule' ? '' : 'none';
       document.getElementById('roster-screen').style.display = S.screen==='roster' ? '' : 'none';
       document.getElementById('transactions-screen').style.display = S.screen==='transactions' ? '' : 'none';
+      document.getElementById('stats-screen').style.display = S.screen==='stats' ? '' : 'none';
       if(S.screen==='schedule') renderScheduleScreen();
       if(S.screen==='roster') renderRosterScreen();
       if(S.screen==='transactions') renderTransactionsScreen();
+      if(S.screen==='stats') renderStatsScreen();
     });
   });
 
