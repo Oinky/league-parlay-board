@@ -1,0 +1,20 @@
+name: Post picks-lock reminder to Discord
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/lock-reminder.js
+        env:
+          FIREBASE_PROJECT_ID: fantasy-parlay
+          SLEEPER_LEAGUE_ID: "1389693561678606336"
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
