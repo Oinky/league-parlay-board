@@ -173,12 +173,17 @@
     padding:0 clamp(20px,5vw,56px);
   }
   .seg-nav{
-    display:inline-flex;
+    display:flex;
     gap:2px;
     background:var(--surface-alt);
     border-radius:var(--radius-sm);
     padding:3px;
+    max-width:100%;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
   }
+  .seg-nav::-webkit-scrollbar{display:none;}
   .seg-tab{
     flex:0 0 auto;
     background:none;
@@ -522,6 +527,7 @@
   }
 
   @media (max-width:520px){
+    .seg-tab{ padding:7px 13px; font-size:13px; white-space:nowrap; }
     .matchup-row{ grid-template-columns:1fr auto 1fr; gap:6px; }
     .side-btn{ padding:9px 8px; gap:0; }
     .side-btn .nm{ font-size:12px; }
@@ -1004,7 +1010,34 @@ function computeStreaks(historyArr){
   return {current, longest, bestWeek};
 }
 
-function renderStatsScreen(){
+async function computeTransactionCounts(){
+  const weeks = [];
+  for(let w=1; w<=S.nflWeek; w++) weeks.push(w);
+  const allTx = await Promise.all(weeks.map(w=>loadTransactionsForWeek(w)));
+  const txs = allTx.flat().filter(t=>t.status==='complete' && (t.adds || t.drops));
+
+  const counts = {}; // rosterId -> {pickups, tradedFor, tradedAway}
+  function ensure(rid){
+    if(!counts[rid]) counts[rid] = {pickups:0, tradedFor:0, tradedAway:0};
+    return counts[rid];
+  }
+
+  txs.forEach(t=>{
+    const isTrade = t.type==='trade';
+    Object.entries(t.adds||{}).forEach(([pid, rid])=>{
+      const c = ensure(rid);
+      if(isTrade) c.tradedFor += 1; else c.pickups += 1; // waiver + free_agent grouped together
+    });
+    if(isTrade){
+      Object.entries(t.drops||{}).forEach(([pid, rid])=>{
+        ensure(rid).tradedAway += 1;
+      });
+    }
+  });
+  return counts;
+}
+
+async function renderStatsScreen(){
   const box = document.getElementById('stats-list');
 
   const streakRows = S.users.map(u=>{
@@ -1059,7 +1092,36 @@ function renderStatsScreen(){
       <h2>Most faded teams</h2>
       <p class="block-sub">Whoever the league has picked against the most this season.</p>
       ${fadeHtml}
+    </section>
+    <section class="block">
+      <h2>Waiver &amp; trade activity</h2>
+      <p class="block-sub">Pickups (waiver + free agent combined) and trade activity this season.</p>
+      <div id="tx-stats-table">${skeletonCardHtml(4)}</div>
     </section>`;
+
+  const counts = await computeTransactionCounts();
+  const txRows = S.users.map(u=>({
+    u, ...(counts[u.rosterId] || {pickups:0, tradedFor:0, tradedAway:0}),
+  })).sort((a,b)=> (b.pickups+b.tradedFor+b.tradedAway) - (a.pickups+a.tradedFor+a.tradedAway));
+
+  const txTableHtml = `
+    <div class="table-wrap">
+      <table class="scoreboard-table">
+        <thead><tr><th>Team</th><th style="text-align:right;">Waiver/FA pickups</th><th style="text-align:right;">Traded for</th><th style="text-align:right;">Traded away</th></tr></thead>
+        <tbody>
+          ${txRows.map(r=>`
+            <tr>
+              <td><div class="team-cell-inner">${ticketAvatar(r.u,'sm')}<div class="team-name">${escapeHtml(r.u.teamName)}</div></div></td>
+              <td class="pts-cell">${r.pickups}</td>
+              <td class="record-cell">${r.tradedFor}</td>
+              <td class="record-cell">${r.tradedAway}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  const txBox = document.getElementById('tx-stats-table');
+  if(txBox) txBox.innerHTML = txTableHtml;
 }
 
 /* =========================================================================
@@ -1795,7 +1857,18 @@ async function buildSeasonCsvRows(){
     Object.entries(parlays).forEach(([userId, pick])=>{
       const u = S.usersById[userId];
       if(!u || !Array.isArray(pick.legs)) return;
-      const legsStr = pick.legs.map(l=>`${l.teamName||'?'} over ${l.opponentName||'?'}`).join('; ');
+      const legsStr = pick.legs.map(l=>{
+        let tn = l.teamName, on = l.opponentName;
+        if(!tn || !on){
+          const m = matchups.find(mm=>mm.matchupId===l.matchupId);
+          if(m){
+            const isA = m.teamA.rosterId===l.rosterId;
+            tn = tn || (isA ? m.teamA.name : m.teamB.name);
+            on = on || (isA ? m.teamB.name : m.teamA.name);
+          }
+        }
+        return `${tn||'Unknown team'} over ${on||'unknown opponent'}`;
+      }).join('; ');
       const pts = final ? scoreParlay(pick, matchups) : null;
       const result = pts===null ? 'Pending' : (pts>0 ? 'Hit' : 'Miss');
       rows.push([w, u.teamName, u.ownerName, legsStr, pick.legs.length, result, pts===null ? '' : pts]);
