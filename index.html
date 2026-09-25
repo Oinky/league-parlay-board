@@ -522,12 +522,37 @@
     border-bottom:1px solid var(--border);
   }
   .roster-cell-name{
+    display:flex;
+    align-items:center;
     min-width:0;
     flex:1 1 auto;
     font-size:13px; font-weight:600;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .roster-cell-name-main{
+    min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
   .roster-cell-opp{font-weight:400; color:var(--text-dim); font-size:11.5px;}
+  .matchup-tag{
+    flex:0 0 auto;
+    display:inline-block; font-size:9.5px; font-weight:700;
+    padding:1.5px 6px; border-radius:4px; margin-left:4px; vertical-align:middle;
+    cursor:pointer;
+  }
+  .matchup-popup{
+    position:absolute;
+    z-index:60;
+    background:var(--text);
+    color:var(--bg);
+    font-size:12px; font-weight:500; line-height:1.4;
+    padding:7px 11px;
+    border-radius:8px;
+    max-width:220px;
+    box-shadow:var(--shadow-md);
+  }
+  .matchup-easy{background:var(--win-soft); color:var(--win);}
+  .matchup-avg{background:var(--surface-alt); color:var(--text-dim);}
+  .matchup-tough{background:var(--loss-soft); color:var(--loss);}
   .roster-cell-score{
     flex:0 0 auto;
     text-align:right;
@@ -765,6 +790,7 @@ const S = {
   rosters: [],              // full Sleeper roster objects (players, starters, etc.)
   projCache: {},            // week -> {playerId: projectedPoints}
   statsCache: {},           // week -> {playerId: actualPoints}
+  defVsPosCache: {},        // position -> {teamAbbr: avgPointsAllowedPerGame}
   nflSchedule: null,        // week -> {teamAbbr: {opp, isHome}}, fetched once
   parlaysCache: {},       // week -> {userId: pickObj}
   scoreboard: {},         // userId -> total points
@@ -930,6 +956,62 @@ async function loadStatsForWeek(week){
   return map;
 }
 
+/* Average fantasy points a defense has allowed to a given position this
+   season, per game — the classic "matchup difficulty" stat. Walks every
+   completed week's real stats, credits each defense with whatever the
+   opposing player at that position scored, and averages by games played.
+   This is a heavier calculation (one stats fetch per completed week), so
+   the result is cached per position for the rest of the session. */
+async function loadDefenseVsPositionStats(position){
+  if(S.defVsPosCache[position]) return S.defVsPosCache[position];
+
+  const [playersMap, schedule] = await Promise.all([loadPlayersMap(), loadNflSchedule()]);
+  const posIds = Object.keys(playersMap).filter(pid=>{
+    const p = playersMap[pid];
+    return p && p.position===position && p.team;
+  });
+
+  const lastCompleted = S.nflWeek - 1;
+  const allowedTotals = {}; // defenseTeamAbbr -> total pts allowed to this position
+  const gamesPlayed = {};   // defenseTeamAbbr -> games counted
+
+  for(let w=1; w<=Math.max(lastCompleted,0); w++){
+    const [statsMap, weekSchedule] = [await loadStatsForWeek(w), schedule[w] || {}];
+    Object.keys(weekSchedule).forEach(team=>{ gamesPlayed[team] = (gamesPlayed[team]||0) + 1; });
+    posIds.forEach(pid=>{
+      const p = playersMap[pid];
+      const pts = statsMap[pid];
+      if(typeof pts !== 'number') return;
+      const info = weekSchedule[p.team];
+      if(!info) return; // bye week, or team not found that week
+      allowedTotals[info.opp] = (allowedTotals[info.opp]||0) + pts;
+    });
+  }
+
+  const result = {};
+  Object.keys(allowedTotals).forEach(team=>{
+    const games = gamesPlayed[team] || 1;
+    result[team] = allowedTotals[team] / games;
+  });
+  S.defVsPosCache[position] = result;
+  return result;
+}
+
+/* Buckets each defense into easy/average/tough for a position, by simple
+   thirds of the season-wide distribution of points allowed. */
+function buildMatchupTiers(defStatsMap){
+  const entries = Object.entries(defStatsMap||{});
+  const tiers = {};
+  if(entries.length===0) return tiers;
+  const sorted = [...entries].sort((a,b)=>b[1]-a[1]); // most allowed (easiest) first
+  const n = sorted.length;
+  sorted.forEach(([team], i)=>{
+    const pct = i/n;
+    tiers[team] = pct < 0.34 ? 'easy' : pct < 0.67 ? 'avg' : 'tough';
+  });
+  return tiers;
+}
+
 /* Full NFL schedule for the season — same domain as our other Sleeper
    calls, so more reliable than the projections endpoint. Fetched once
    and cached for the whole session. */
@@ -962,6 +1044,14 @@ function opponentText(schedule, week, teamAbbr){
   const info = wk[teamAbbr];
   if(!info) return 'BYE';
   return (info.isHome ? 'vs ' : '@ ') + info.opp;
+}
+
+function opponentAbbrFor(schedule, week, teamAbbr){
+  if(!teamAbbr) return null;
+  const wk = schedule[week];
+  if(!wk) return null;
+  const info = wk[teamAbbr];
+  return info ? info.opp : null;
 }
 
 function isWeekFinal(week){
@@ -1488,26 +1578,50 @@ async function renderRosterScreen(){
   list.innerHTML = skeletonGridHtml(6, 5);
 
   const prevWeek = S.nflWeek - 1;
-  const [playersMap, projMap, schedule, prevStatsMap] = await Promise.all([
+  const MATCHUP_POSITIONS = ['QB','RB','WR','TE'];
+  const [playersMap, projMap, schedule, prevStatsMap, defStatsByPos] = await Promise.all([
     loadPlayersMap(),
     loadProjectionsForWeek(S.nflWeek),
     loadNflSchedule(),
     prevWeek>=1 ? loadStatsForWeek(prevWeek) : Promise.resolve({}),
+    Promise.all(MATCHUP_POSITIONS.map(pos=>loadDefenseVsPositionStats(pos))),
   ]);
   const rosterByRosterId = {};
   S.rosters.forEach(r=>{ rosterByRosterId[r.roster_id] = r; });
+
+  const defStatsMap = {};   // position -> {teamAbbr: avgAllowed}
+  const defTiersMap = {};   // position -> {teamAbbr: 'easy'|'avg'|'tough'}
+  MATCHUP_POSITIONS.forEach((pos,i)=>{
+    defStatsMap[pos] = defStatsByPos[i];
+    defTiersMap[pos] = buildMatchupTiers(defStatsByPos[i]);
+  });
+  const TIER_LABEL = {easy:'Easy', avg:'Avg', tough:'Tough'};
+
+  function matchupTagHtml(pos, teamAbbr){
+    if(!teamAbbr || !MATCHUP_POSITIONS.includes(pos)) return '';
+    const oppAbbr = opponentAbbrFor(schedule, S.nflWeek, teamAbbr);
+    if(!oppAbbr) return '';
+    const allowed = defStatsMap[pos] ? defStatsMap[pos][oppAbbr] : undefined;
+    if(typeof allowed !== 'number') return '';
+    const tier = (defTiersMap[pos] && defTiersMap[pos][oppAbbr]) || 'avg';
+    const tip = `${oppAbbr} allows ${allowed.toFixed(1)} pts/gm to ${pos}s this season`;
+    return ` <span class="matchup-tag matchup-${tier}" title="${escapeHtml(tip)}" data-tip="${escapeHtml(tip)}">${TIER_LABEL[tier]}</span>`;
+  }
 
   function rosterCellHtml(pid){
     const p = playersMap[pid];
     const name = p ? (p.full_name || `${p.first_name||''} ${p.last_name||''}`.trim() || `Player ${pid}`) : `Player ${pid}`;
     const teamText = p && p.team ? ` <span class="player-team">${escapeHtml(p.team)}</span>` : '';
     const oppText = p ? opponentText(schedule, S.nflWeek, p.team) : '';
+    const matchupTag = p ? matchupTagHtml(p.position, p.team) : '';
     const proj = projMap[pid];
     const projText = typeof proj === 'number' ? `${proj.toFixed(1)} proj` : '—';
     const prevPts = prevStatsMap[pid];
     const prevText = (prevWeek>=1 && typeof prevPts==='number') ? `${prevPts.toFixed(1)} wk${prevWeek}` : '';
     return `<div class="roster-cell">
-      <div class="roster-cell-name">${positionBadgeHtml(p && p.position)}${escapeHtml(name)}${teamText}${oppText?` <span class="roster-cell-opp">${escapeHtml(oppText)}</span>`:''}</div>
+      <div class="roster-cell-name">
+        <span class="roster-cell-name-main">${positionBadgeHtml(p && p.position)}${escapeHtml(name)}${teamText}${oppText?` <span class="roster-cell-opp">${escapeHtml(oppText)}</span>`:''}</span>${matchupTag}
+      </div>
       <div class="roster-cell-score">
         <span class="roster-score-main">${escapeHtml(projText)}</span>
         ${prevText ? `<span class="roster-score-sub">${escapeHtml(prevText)}</span>` : ''}
@@ -1935,6 +2049,29 @@ function openAdminModal(){
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+/* Tap/click-to-reveal popup for the matchup-difficulty tags (native title
+   hover tooltips don't work on touch devices at all, and can get clipped
+   by the truncating name text on desktop). Delegated on document so it
+   keeps working across re-renders of the roster list. */
+document.addEventListener('click', e=>{
+  const tag = e.target.closest('.matchup-tag');
+  const existing = document.querySelector('.matchup-popup');
+  const wasOpenForThisTag = existing && existing._forTag === tag;
+  if(existing) existing.remove();
+  if(tag && !wasOpenForThisTag){
+    const popup = document.createElement('div');
+    popup.className = 'matchup-popup';
+    popup._forTag = tag;
+    popup.textContent = tag.dataset.tip || '';
+    document.body.appendChild(popup);
+    const rect = tag.getBoundingClientRect();
+    const maxLeft = window.scrollX + document.documentElement.clientWidth - popup.offsetWidth - 10;
+    const left = Math.max(8, Math.min(rect.left + window.scrollX, maxLeft));
+    popup.style.left = `${left}px`;
+    popup.style.top = `${rect.bottom + window.scrollY + 6}px`;
+  }
+});
 
 function skeletonCardHtml(lines){
   lines = lines || 4;
