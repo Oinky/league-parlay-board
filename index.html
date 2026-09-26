@@ -595,6 +595,7 @@
 
   @media (max-width:520px){
     .seg-tab{ padding:7px 13px; font-size:13px; white-space:nowrap; }
+    .roster-team-grid{ grid-template-columns:1fr; }
     .matchup-row{ grid-template-columns:1fr auto 1fr; gap:6px; }
     .side-btn{ padding:9px 8px; gap:0; }
     .side-btn .nm{ font-size:12px; }
@@ -1579,15 +1580,28 @@ async function renderRosterScreen(){
 
   const prevWeek = S.nflWeek - 1;
   const MATCHUP_POSITIONS = ['QB','RB','WR','TE'];
-  const [playersMap, projMap, schedule, prevStatsMap, defStatsByPos] = await Promise.all([
+  const [playersMap, projMap, schedule, prevStatsMap, defStatsByPos, fantasyMatchups] = await Promise.all([
     loadPlayersMap(),
     loadProjectionsForWeek(S.nflWeek),
     loadNflSchedule(),
     prevWeek>=1 ? loadStatsForWeek(prevWeek) : Promise.resolve({}),
     Promise.all(MATCHUP_POSITIONS.map(pos=>loadDefenseVsPositionStats(pos))),
+    loadMatchupsForWeek(S.nflWeek),
   ]);
   const rosterByRosterId = {};
   S.rosters.forEach(r=>{ rosterByRosterId[r.roster_id] = r; });
+
+  // Order teams so each row of the 2-column grid is this week's actual
+  // fantasy matchup, rather than alphabetical order.
+  const userByRosterId = {};
+  S.users.forEach(u=>{ userByRosterId[u.rosterId] = u; });
+  const orderedUsers = [];
+  fantasyMatchups.forEach(m=>{
+    if(userByRosterId[m.teamA.rosterId]) orderedUsers.push(userByRosterId[m.teamA.rosterId]);
+    if(userByRosterId[m.teamB.rosterId]) orderedUsers.push(userByRosterId[m.teamB.rosterId]);
+  });
+  const orderedIds = new Set(orderedUsers.map(u=>u.userId));
+  S.users.forEach(u=>{ if(!orderedIds.has(u.userId)) orderedUsers.push(u); }); // byes / edge cases
 
   const defStatsMap = {};   // position -> {teamAbbr: avgAllowed}
   const defTiersMap = {};   // position -> {teamAbbr: 'easy'|'avg'|'tough'}
@@ -1666,7 +1680,7 @@ async function renderRosterScreen(){
     return total;
   }
 
-  const cards = S.users.map(u=>{
+  const cards = orderedUsers.map(u=>{
     const r = rosterByRosterId[u.rosterId];
     if(!r) return '';
     const starterIds = (r.starters||[]).filter(pid=>pid && pid!=='0');
