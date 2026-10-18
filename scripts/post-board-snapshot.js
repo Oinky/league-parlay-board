@@ -12,8 +12,12 @@ async function main() {
   const league = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}`)).json();
   const season = league.season;
 
+  // FORCE_SNAPSHOT is set by the manual "force_snapshot" workflow input so you
+  // can test the whole pipeline on demand without it counting as the week's
+  // real post (it won't mark the week as done).
+  const force = process.env.FORCE_SNAPSHOT === "true";
   const postedKey = `boardSnapshotPosted/${season}_${week}`;
-  const already = await getDoc(postedKey);
+  const already = force ? null : await getDoc(postedKey);
   if (already) {
     console.log("Already posted (likely a race with another run) — skipping.");
     return;
@@ -39,7 +43,7 @@ async function main() {
         `week-${week}-board.png`,
         `🏈 **Week ${week} board** — kickoff is just minutes away. Here's who's on the clock.`,
     );
-    await setDoc(postedKey, {postedAt: new Date().toISOString()});
+    if (!force) await setDoc(postedKey, {postedAt: new Date().toISOString()});
     console.log("Posted board snapshot to Discord.");
   } finally {
     await browser.close();

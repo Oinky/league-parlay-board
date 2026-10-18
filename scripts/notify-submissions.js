@@ -9,25 +9,35 @@ async function main() {
   const league = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}`)).json();
   const season = league.season;
 
-  // Fetch league membership once up front so we can fill in any names
-  // missing from the stored pick (e.g. parlays placed by an older
-  // version of the site, before team/opponent names were saved).
-  const [users, rosters] = await Promise.all([
-    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/users`)).json(),
-    (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/rosters`)).json(),
-  ]);
-  const nameByUser = {};
-  users.forEach((u) => {
-    nameByUser[u.user_id] = (u.metadata && u.metadata.team_name) ? u.metadata.team_name : u.display_name;
-  });
-  const nameByRoster = {};
-  rosters.forEach((r) => {
-    nameByRoster[r.roster_id] = nameByUser[r.owner_id] || `Roster ${r.roster_id}`;
-  });
+  // League membership is only needed to fill in names, and most runs (every
+  // 5 minutes, all week) find nothing new to post — so fetch it lazily, once,
+  // the first time something actually needs it.
+  let namesPromise = null;
+  function getNames() {
+    if (!namesPromise) {
+      namesPromise = (async () => {
+        const [users, rosters] = await Promise.all([
+          (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/users`)).json(),
+          (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/rosters`)).json(),
+        ]);
+        const nameByUser = {};
+        users.forEach((u) => {
+          nameByUser[u.user_id] = (u.metadata && u.metadata.team_name) ? u.metadata.team_name : u.display_name;
+        });
+        const nameByRoster = {};
+        rosters.forEach((r) => {
+          nameByRoster[r.roster_id] = nameByUser[r.owner_id] || `Roster ${r.roster_id}`;
+        });
+        return {nameByUser, nameByRoster};
+      })();
+    }
+    return namesPromise;
+  }
 
   const matchupNameCache = {}; // week -> {matchupId -> {teamA:{rosterId,name}, teamB:{...}}}
   async function matchupNamesForWeek(week) {
     if (matchupNameCache[week]) return matchupNameCache[week];
+    const {nameByRoster} = await getNames();
     const raw = await (await fetch(`https://api.sleeper.app/v1/league/${LEAGUE_ID}/matchups/${week}`)).json();
     const byId = new Map();
     raw.forEach((e) => {
@@ -60,7 +70,7 @@ async function main() {
       if (!pick || !pick.submittedAt || !Array.isArray(pick.legs)) continue;
       if (pick.submittedAt <= lastNotifiedAt) continue; // already notified last run
 
-      const teamName = pick.teamName || nameByUser[userId] || "Someone";
+      const teamName = pick.teamName || (await getNames()).nameByUser[userId] || "Someone";
 
       // Fill in any missing leg names from Sleeper's live matchups so old
       // or incomplete pick data still renders a readable message.
