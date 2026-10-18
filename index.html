@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The Parlay Board</title>
+<link rel="preconnect" href="https://api.sleeper.app">
+<link rel="preconnect" href="https://api.sleeper.com">
+<link rel="preconnect" href="https://firestore.googleapis.com">
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 <script>
   // Set the theme before first paint to avoid a light-mode flash.
   (function(){
@@ -787,17 +791,13 @@ const S = {
   isAdmin: false,
   matchupsCache: {},      // week -> [{matchupId, teamA, teamB}]
   txCache: {},             // week -> [transaction, ...]
-  playersById: null,       // Sleeper's full player dictionary, fetched lazily
   rosters: [],              // full Sleeper roster objects (players, starters, etc.)
   projCache: {},            // week -> {playerId: projectedPoints}
   statsCache: {},           // week -> {playerId: actualPoints}
   defVsPosCache: {},        // position -> {teamAbbr: avgPointsAllowedPerGame}
-  nflSchedule: null,        // week -> {teamAbbr: {opp, isHome}}, fetched once
+  once: {},                 // single-value caches (players, schedule) keyed by name
   parlaysCache: {},       // week -> {userId: pickObj}
   scoreboard: {},         // userId -> total points
-  builderLegs: [],        // legs currently selected in the open builder
-  builderTarget: null,    // userId the open builder is editing
-  builderPrevContext: null, // {pointsByRoster, fadedRosterIds} for the previous week, or null
   seasonHistory: {},        // userId -> [{week, pts, hit}] in week order
   fadeByTeam: {},           // rosterId -> times picked against (faded)
   fadeByUser: {},           // userId -> {rosterId: count}
@@ -845,49 +845,81 @@ async function loadLeagueMeta(){
   S.selectedWeek = Math.min(Math.max(1, S.nflWeek), S.regularWeeks);
 }
 
-async function loadMatchupsForWeek(week){
-  if(S.matchupsCache[week]) return S.matchupsCache[week];
-  const raw = await sleeperGet(`league/${LEAGUE_ID}/matchups/${week}`);
-  const byId = new Map();
-  raw.forEach(e=>{
-    if(e.matchup_id === null || e.matchup_id === undefined) return;
-    if(!byId.has(e.matchup_id)) byId.set(e.matchup_id, []);
-    byId.get(e.matchup_id).push(e);
-  });
-  const userByRoster = {};
-  S.users.forEach(u => userByRoster[u.rosterId] = u);
-
-  const matchups = [];
-  byId.forEach((entries, matchupId)=>{
-    if(entries.length !== 2) return;
-    const [a,b] = entries;
-    const ua = userByRoster[a.roster_id], ub = userByRoster[b.roster_id];
-    if(!ua || !ub) return;
-    matchups.push({
-      matchupId,
-      teamA: { rosterId:a.roster_id, userId:ua.userId, name:ua.teamName, points: (typeof a.points==='number'? a.points: null) },
-      teamB: { rosterId:b.roster_id, userId:ub.userId, name:ub.teamName, points: (typeof b.points==='number'? b.points: null) },
+/* Caches the in-flight PROMISE (not just the resolved value) so concurrent
+   callers share one request instead of each firing their own. A rejected
+   load is dropped from the cache so the next call retries. */
+function memoLoad(cache, key, fn, force){
+  if(force || !cache[key]){
+    const p = fn();
+    cache[key] = p;
+    p.catch(()=>{ if(cache[key]===p) delete cache[key]; });
+  }
+  return cache[key];
+}
+/* Same idea for the undocumented/optional endpoints: on failure, log it,
+   hand back an empty fallback, and don't cache the failure. */
+function softMemoLoad(cache, key, fn, fallback){
+  if(!cache[key]){
+    const p = fn().catch(err=>{
+      console.error(`Load failed for ${key}:`, err);
+      if(cache[key]===p) delete cache[key];
+      return fallback();
     });
+    cache[key] = p;
+  }
+  return cache[key];
+}
+
+function loadMatchupsForWeek(week, force){
+  return memoLoad(S.matchupsCache, week, async ()=>{
+    const raw = await sleeperGet(`league/${LEAGUE_ID}/matchups/${week}`);
+    const byId = new Map();
+    raw.forEach(e=>{
+      if(e.matchup_id === null || e.matchup_id === undefined) return;
+      if(!byId.has(e.matchup_id)) byId.set(e.matchup_id, []);
+      byId.get(e.matchup_id).push(e);
+    });
+    const userByRoster = {};
+    S.users.forEach(u => userByRoster[u.rosterId] = u);
+
+    const matchups = [];
+    byId.forEach((entries, matchupId)=>{
+      if(entries.length !== 2) return;
+      const [a,b] = entries;
+      const ua = userByRoster[a.roster_id], ub = userByRoster[b.roster_id];
+      if(!ua || !ub) return;
+      matchups.push({
+        matchupId,
+        teamA: { rosterId:a.roster_id, userId:ua.userId, name:ua.teamName, points: (typeof a.points==='number'? a.points: null) },
+        teamB: { rosterId:b.roster_id, userId:ub.userId, name:ub.teamName, points: (typeof b.points==='number'? b.points: null) },
+      });
+    });
+    matchups.sort((m1,m2)=>m1.matchupId-m2.matchupId);
+    return matchups;
+  }, force);
+}
+
+function loadTransactionsForWeek(week){
+  return memoLoad(S.txCache, week, async ()=>{
+    const raw = await sleeperGet(`league/${LEAGUE_ID}/transactions/${week}`);
+    return raw.map(t=>({...t, _week: week}));
   });
-  matchups.sort((m1,m2)=>m1.matchupId-m2.matchupId);
-  S.matchupsCache[week] = matchups;
-  return matchups;
 }
 
-async function loadTransactionsForWeek(week){
-  if(S.txCache[week]) return S.txCache[week];
-  const raw = await sleeperGet(`league/${LEAGUE_ID}/transactions/${week}`);
-  const withWeek = raw.map(t=>({...t, _week: week}));
-  S.txCache[week] = withWeek;
-  return withWeek;
-}
-
-/* Sleeper's full NFL player dictionary — several MB, so this is only
-   fetched once, lazily, the first time the Transactions tab is opened. */
-async function loadPlayersMap(){
-  if(S.playersById) return S.playersById;
-  S.playersById = await sleeperGet(`players/nfl`);
-  return S.playersById;
+/* Sleeper's full NFL player dictionary is several MB with ~30 fields per
+   player; we only ever use five, so slim it down on arrival to cut memory
+   use dramatically. Fetched once per session, shared by every caller. */
+function loadPlayersMap(){
+  return softMemoLoad(S.once, 'players', async ()=>{
+    const raw = await sleeperGet(`players/nfl`);
+    const slim = {};
+    for(const pid in raw){
+      const p = raw[pid];
+      if(!p) continue;
+      slim[pid] = {full_name:p.full_name, first_name:p.first_name, last_name:p.last_name, position:p.position, team:p.team};
+    }
+    return slim;
+  }, ()=>({}));
 }
 
 /* Multiplies each of a player's raw stat categories by this league's own
@@ -910,92 +942,75 @@ function computeCustomScore(stats, scoringSettings){
   return typeof stats.pts_ppr === 'number' ? stats.pts_ppr : null;
 }
 
-/* Weekly player projections — this hits an undocumented Sleeper endpoint
-   on a different domain, so it's wrapped defensively: any failure (CORS,
-   network, format change) just yields an empty map and projections are
-   silently omitted rather than breaking the Roster tab. */
-async function loadProjectionsForWeek(week){
-  if(S.projCache[week]) return S.projCache[week];
+/* Fetches a per-week player stat/projection feed from Sleeper's undocumented
+   endpoint and scores each player with the league's exact scoring. */
+async function fetchScoredPlayerFeed(kind, week){
+  const res = await fetch(`https://api.sleeper.com/${kind}/nfl/${S.season}/${week}?season_type=regular`);
+  if(!res.ok) throw new Error(`${kind} request failed: ${res.status}`);
+  const raw = await res.json();
+  const scoringSettings = (S.league && S.league.scoring_settings) || {};
   const map = {};
-  try{
-    const res = await fetch(`https://api.sleeper.com/projections/nfl/${S.season}/${week}?season_type=regular`);
-    if(!res.ok) throw new Error(`Projections request failed: ${res.status}`);
-    const raw = await res.json();
-    const scoringSettings = (S.league && S.league.scoring_settings) || {};
-    raw.forEach(p=>{
-      if(!p || !p.player_id || !p.stats) return;
-      const val = computeCustomScore(p.stats, scoringSettings);
-      if(typeof val === 'number') map[p.player_id] = val;
-    });
-  }catch(e){
-    console.error('Projections unavailable, showing roster without them:', e);
-  }
-  S.projCache[week] = map;
-  return map;
-}
-
-/* Actual stats for a completed week, scored the same way (exact league
-   scoring via computeCustomScore). Same undocumented-endpoint caveats and
-   defensive fallback as projections. */
-async function loadStatsForWeek(week){
-  if(S.statsCache[week]) return S.statsCache[week];
-  const map = {};
-  try{
-    const res = await fetch(`https://api.sleeper.com/stats/nfl/${S.season}/${week}?season_type=regular`);
-    if(!res.ok) throw new Error(`Stats request failed: ${res.status}`);
-    const raw = await res.json();
-    const scoringSettings = (S.league && S.league.scoring_settings) || {};
-    raw.forEach(p=>{
-      if(!p || !p.player_id || !p.stats) return;
-      const val = computeCustomScore(p.stats, scoringSettings);
-      if(typeof val === 'number') map[p.player_id] = val;
-    });
-  }catch(e){
-    console.error('Stats unavailable, showing roster without last week scores:', e);
-  }
-  S.statsCache[week] = map;
-  return map;
-}
-
-/* Average fantasy points a defense has allowed to a given position this
-   season, per game — the classic "matchup difficulty" stat. Walks every
-   completed week's real stats, credits each defense with whatever the
-   opposing player at that position scored, and averages by games played.
-   This is a heavier calculation (one stats fetch per completed week), so
-   the result is cached per position for the rest of the session. */
-async function loadDefenseVsPositionStats(position){
-  if(S.defVsPosCache[position]) return S.defVsPosCache[position];
-
-  const [playersMap, schedule] = await Promise.all([loadPlayersMap(), loadNflSchedule()]);
-  const posIds = Object.keys(playersMap).filter(pid=>{
-    const p = playersMap[pid];
-    return p && p.position===position && p.team;
+  raw.forEach(p=>{
+    if(!p || !p.player_id || !p.stats) return;
+    const val = computeCustomScore(p.stats, scoringSettings);
+    if(typeof val === 'number') map[p.player_id] = val;
   });
+  return map;
+}
 
-  const lastCompleted = S.nflWeek - 1;
-  const allowedTotals = {}; // defenseTeamAbbr -> total pts allowed to this position
-  const gamesPlayed = {};   // defenseTeamAbbr -> games counted
+/* Weekly projections / actual stats — undocumented endpoints on a different
+   domain, so any failure just yields an empty map and the numbers are
+   omitted rather than breaking the Roster tab. */
+function loadProjectionsForWeek(week){
+  return softMemoLoad(S.projCache, week, ()=>fetchScoredPlayerFeed('projections', week), ()=>({}));
+}
+function loadStatsForWeek(week){
+  return softMemoLoad(S.statsCache, week, ()=>fetchScoredPlayerFeed('stats', week), ()=>({}));
+}
 
-  for(let w=1; w<=Math.max(lastCompleted,0); w++){
-    const [statsMap, weekSchedule] = [await loadStatsForWeek(w), schedule[w] || {}];
-    Object.keys(weekSchedule).forEach(team=>{ gamesPlayed[team] = (gamesPlayed[team]||0) + 1; });
-    posIds.forEach(pid=>{
+/* Average fantasy points each defense has allowed per game, for several
+   positions at once — the classic "matchup difficulty" stat. One pass over
+   the season: every completed week's stats are fetched in parallel (and
+   shared with every other caller via the promise cache), then each
+   player's score is credited to the defense they faced. Cached per set of
+   positions for the rest of the session.
+   Returns {position: {defenseTeamAbbr: avgPointsAllowed}}. */
+function loadDefenseVsPositionStats(positions){
+  const list = positions || ['QB','RB','WR','TE'];
+  return memoLoad(S.defVsPosCache, list.join(','), async ()=>{
+    const [playersMap, schedule] = await Promise.all([loadPlayersMap(), loadNflSchedule()]);
+    const wanted = new Set(list);
+    const relevant = []; // [playerId, position, team]
+    for(const pid in playersMap){
       const p = playersMap[pid];
-      const pts = statsMap[pid];
-      if(typeof pts !== 'number') return;
-      const info = weekSchedule[p.team];
-      if(!info) return; // bye week, or team not found that week
-      allowedTotals[info.opp] = (allowedTotals[info.opp]||0) + pts;
-    });
-  }
+      if(p && p.team && wanted.has(p.position)) relevant.push([pid, p.position, p.team]);
+    }
 
-  const result = {};
-  Object.keys(allowedTotals).forEach(team=>{
-    const games = gamesPlayed[team] || 1;
-    result[team] = allowedTotals[team] / games;
+    const weeks = [];
+    for(let w=1; w<=Math.max(S.nflWeek-1,0); w++) weeks.push(w);
+    const statsByWeek = await Promise.all(weeks.map(w=>loadStatsForWeek(w)));
+
+    const totals = {}, games = {};
+    list.forEach(pos=>{ totals[pos] = {}; });
+    weeks.forEach((w,i)=>{
+      const statsMap = statsByWeek[i], weekSchedule = schedule[w] || {};
+      Object.keys(weekSchedule).forEach(t=>{ games[t] = (games[t]||0) + 1; });
+      relevant.forEach(([pid,pos,team])=>{
+        const pts = statsMap[pid];
+        if(typeof pts !== 'number') return;
+        const info = weekSchedule[team];
+        if(!info) return; // bye week, or team not found that week
+        totals[pos][info.opp] = (totals[pos][info.opp]||0) + pts;
+      });
+    });
+
+    const result = {};
+    list.forEach(pos=>{
+      result[pos] = {};
+      Object.keys(totals[pos]).forEach(t=>{ result[pos][t] = totals[pos][t] / (games[t]||1); });
+    });
+    return result;
   });
-  S.defVsPosCache[position] = result;
-  return result;
 }
 
 /* Buckets each defense into easy/average/tough for a position, by simple
@@ -1013,29 +1028,22 @@ function buildMatchupTiers(defStatsMap){
   return tiers;
 }
 
-/* Full NFL schedule for the season — same domain as our other Sleeper
-   calls, so more reliable than the projections endpoint. Fetched once
-   and cached for the whole session. */
-async function loadNflSchedule(){
-  if(S.nflSchedule) return S.nflSchedule;
-  const byWeek = {};
-  try{
-    // This endpoint lives at the API root, NOT under /v1/ like the rest
-    // of Sleeper's API — sleeperGet() would silently 404 here.
+/* Full NFL schedule for the season. Lives at the API root, NOT under /v1/
+   like the rest of Sleeper's API, so sleeperGet() would silently 404. */
+function loadNflSchedule(){
+  return softMemoLoad(S.once, 'schedule', async ()=>{
     const res = await fetch(`https://api.sleeper.app/schedule/nfl/regular/${S.season}`);
     if(!res.ok) throw new Error(`Schedule request failed: ${res.status}`);
     const raw = await res.json();
+    const byWeek = {};
     raw.forEach(g=>{
       if(!g || !g.week || !g.home || !g.away) return;
       if(!byWeek[g.week]) byWeek[g.week] = {};
       byWeek[g.week][g.home] = {opp: g.away, isHome: true};
       byWeek[g.week][g.away] = {opp: g.home, isHome: false};
     });
-  }catch(e){
-    console.error('NFL schedule unavailable, showing roster without opponents:', e);
-  }
-  S.nflSchedule = byWeek;
-  return byWeek;
+    return byWeek;
+  }, ()=>({}));
 }
 
 function opponentText(schedule, week, teamAbbr){
@@ -1077,26 +1085,27 @@ function previousWeekEnded(week){
    ========================================================================= */
 function parlayDocId(week){ return `${S.season}_${week}`; }
 
-async function loadParlaysForWeek(week, force){
-  if(S.parlaysCache[week] && !force) return S.parlaysCache[week];
-  let obj = {};
-  try{
+function loadParlaysForWeek(week){
+  return softMemoLoad(S.parlaysCache, week, async ()=>{
     const snap = await db.collection('parlays').doc(parlayDocId(week)).get();
-    if(snap.exists) obj = snap.data() || {};
-  }catch(e){ console.error('Firestore read failed', e); obj = {}; }
-  S.parlaysCache[week] = obj;
-  return obj;
+    return snap.exists ? (snap.data() || {}) : {};
+  }, ()=>({}));
 }
 
-async function saveParlaysForWeek(week, obj){
-  await db.collection('parlays').doc(parlayDocId(week)).set(obj);
-  S.parlaysCache[week] = obj;
+/* Writes ONLY this user's field instead of read-modify-writing the whole
+   week document — otherwise two people locking in at the same moment (very
+   likely right before kickoff) could overwrite each other's pick. */
+async function saveParlay(week, userId, pick){
+  await db.collection('parlays').doc(parlayDocId(week)).set({[userId]: pick}, {merge:true});
+  const obj = await loadParlaysForWeek(week);
+  obj[userId] = pick;
 }
 
 async function deleteParlay(userId, week){
-  const weekParlays = await loadParlaysForWeek(week, true);
-  delete weekParlays[userId];
-  await saveParlaysForWeek(week, weekParlays);
+  await db.collection('parlays').doc(parlayDocId(week))
+    .update(new firebase.firestore.FieldPath(userId), firebase.firestore.FieldValue.delete());
+  const obj = await loadParlaysForWeek(week);
+  delete obj[userId];
 }
 
 /* =========================================================================
@@ -1359,14 +1368,33 @@ async function renderWeekDependent(){
   document.getElementById('board-grid').innerHTML = '';
   document.getElementById('pick-pct-section').innerHTML = '';
 
-  const [matchups, parlays] = await Promise.all([
-    loadMatchupsForWeek(S.selectedWeek),
-    loadParlaysForWeek(S.selectedWeek),
-  ]);
+  const week = S.selectedWeek;
+  let matchups, parlays;
+  try{
+    [matchups, parlays] = await Promise.all([loadMatchupsForWeek(week), loadParlaysForWeek(week)]);
+  }catch(e){
+    console.error(e);
+    if(week===S.selectedWeek){
+      document.getElementById('your-slip').innerHTML =
+        `<p class="state-msg">Couldn’t load week ${week} from Sleeper. <button class="btn small" data-retry-week>Retry</button></p>`;
+    }
+    return;
+  }
+  if(week !== S.selectedWeek) return; // the user switched weeks while this was loading
 
   await renderYourSlip(matchups, parlays);
+  if(week !== S.selectedWeek) return;
   renderPickPercentages(matchups, parlays);
   renderBoardGrid(matchups, parlays);
+}
+
+/* Re-renders just the "your slip" card (e.g. after picking a different
+   name) without rebuilding the whole board. */
+async function refreshYourSlip(){
+  const week = S.selectedWeek;
+  const [matchups, parlays] = await Promise.all([loadMatchupsForWeek(week), loadParlaysForWeek(week)]);
+  if(week !== S.selectedWeek) return;
+  await renderYourSlip(matchups, parlays);
 }
 
 function renderPickPercentages(matchups, parlays){
@@ -1496,8 +1524,9 @@ async function renderYourSlip(matchups, parlays){
     return;
   }
 
-  const u = S.usersById[S.currentUserId];
-  title.textContent = `${u.teamName}'s slip — week ${S.selectedWeek}`;
+  const week = S.selectedWeek, userId = S.currentUserId;
+  const u = S.usersById[userId];
+  title.textContent = `${u.teamName}'s slip — week ${week}`;
   const pick = parlays[S.currentUserId];
   const started = weekHasStarted(matchups);
   const final = isWeekFinal(S.selectedWeek);
@@ -1506,7 +1535,6 @@ async function renderYourSlip(matchups, parlays){
   if(pick){
     sub.textContent = 'Your parlay is locked in for this week.';
     box.innerHTML = renderTicketFor(S.currentUserId, matchups, parlays, {allowEdit:S.isAdmin});
-    bindEditLinks(matchups, parlays);
     return;
   }
 
@@ -1525,9 +1553,9 @@ async function renderYourSlip(matchups, parlays){
   }
 
   sub.textContent = 'Pick 2 to 6 winners. Get every leg right to score.';
-  S.builderPrevContext = S.selectedWeek >= 2 ? await getPrevWeekContext(S.selectedWeek - 1, S.currentUserId) : null;
-  box.innerHTML = renderBuilder(matchups, S.currentUserId);
-  bindBuilder(matchups, parlays, S.currentUserId, false);
+  const prevContext = week >= 2 ? await getPrevWeekContext(week - 1, userId) : null;
+  if(week !== S.selectedWeek || userId !== S.currentUserId) return; // selection changed mid-load
+  mountBuilder(box, {matchups, forUserId:userId, isAdminEdit:false, prevContext, week});
 }
 
 function renderBoardGrid(matchups, parlays){
@@ -1538,22 +1566,6 @@ function renderBoardGrid(matchups, parlays){
     return;
   }
   grid.innerHTML = others.map(u=>renderTicketFor(u.userId, matchups, parlays, {allowEdit:S.isAdmin})).join('');
-  bindEditLinks(matchups, parlays);
-}
-
-function bindEditLinks(matchups, parlays){
-  document.querySelectorAll('[data-edit-user]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const targetUser = btn.dataset.editUser;
-      openAdminBuilder(matchups, parlays, targetUser);
-    });
-  });
-  document.querySelectorAll('[data-delete-user]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const targetUser = btn.dataset.deleteUser;
-      openDeleteConfirm(targetUser, S.selectedWeek);
-    });
-  });
 }
 
 /* =========================================================================
@@ -1585,7 +1597,7 @@ async function renderRosterScreen(){
     loadProjectionsForWeek(S.nflWeek),
     loadNflSchedule(),
     prevWeek>=1 ? loadStatsForWeek(prevWeek) : Promise.resolve({}),
-    Promise.all(MATCHUP_POSITIONS.map(pos=>loadDefenseVsPositionStats(pos))),
+    loadDefenseVsPositionStats(MATCHUP_POSITIONS),
     loadMatchupsForWeek(S.nflWeek),
   ]);
   const rosterByRosterId = {};
@@ -1603,12 +1615,9 @@ async function renderRosterScreen(){
   const orderedIds = new Set(orderedUsers.map(u=>u.userId));
   S.users.forEach(u=>{ if(!orderedIds.has(u.userId)) orderedUsers.push(u); }); // byes / edge cases
 
-  const defStatsMap = {};   // position -> {teamAbbr: avgAllowed}
-  const defTiersMap = {};   // position -> {teamAbbr: 'easy'|'avg'|'tough'}
-  MATCHUP_POSITIONS.forEach((pos,i)=>{
-    defStatsMap[pos] = defStatsByPos[i];
-    defTiersMap[pos] = buildMatchupTiers(defStatsByPos[i]);
-  });
+  const defStatsMap = defStatsByPos;   // position -> {teamAbbr: avgAllowed}
+  const defTiersMap = {};              // position -> {teamAbbr: 'easy'|'avg'|'tough'}
+  MATCHUP_POSITIONS.forEach(pos=>{ defTiersMap[pos] = buildMatchupTiers(defStatsByPos[pos]); });
   const TIER_LABEL = {easy:'Easy', avg:'Avg', tough:'Tough'};
 
   function matchupTagHtml(pos, teamAbbr){
@@ -1857,28 +1866,7 @@ async function getPrevWeekContext(prevWeek, forUserId){
   return {pointsByRoster, fadedRosterIds};
 }
 
-function renderBuilder(matchups, forUserId, prefillLegs){
-  S.builderLegs = prefillLegs ? [...prefillLegs] : [];
-  S.builderTarget = forUserId;
-  const ownMid = ownMatchupIdFor(forUserId, matchups);
-
-  return `
-  <div class="builder" id="builder-root">
-    <div class="builder-top">
-      <div class="leg-counter">Legs selected: <b id="leg-count">${S.builderLegs.length}</b> / ${MAX_LEGS} (min ${MIN_LEGS})</div>
-    </div>
-    <div class="matchup-picker" id="matchup-picker">
-      ${matchups.map(m=>matchupRowHtml(m, ownMid)).join('')}
-    </div>
-    <div id="builder-warn"></div>
-    <div class="builder-actions">
-      <button class="btn primary" id="submit-slip-btn">Lock in slip</button>
-    </div>
-  </div>`;
-}
-
-function sideExtraHtml(side){
-  const ctx = S.builderPrevContext;
+function sideExtraHtml(side, ctx){
   if(!ctx) return '';
   let html = '';
   const pts = ctx.pointsByRoster[side.rosterId];
@@ -1887,85 +1875,113 @@ function sideExtraHtml(side){
   return html;
 }
 
-function matchupRowHtml(m, ownMid){
+function matchupRowHtml(m, ownMid, legs, ctx){
   const isOwn = m.matchupId===ownMid;
-  const aSel = S.builderLegs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamA.rosterId);
-  const bSel = S.builderLegs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamB.rosterId);
+  const aSel = legs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamA.rosterId);
+  const bSel = legs.some(l=>l.matchupId===m.matchupId && l.rosterId===m.teamB.rosterId);
   return `
   <div class="matchup-row" data-matchup="${m.matchupId}">
     <button class="side-btn ${aSel?'selected':''}" data-matchup="${m.matchupId}" data-roster="${m.teamA.rosterId}">
-      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamA.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}${sideExtraHtml(m.teamA)}</span>
+      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamA.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}${sideExtraHtml(m.teamA, ctx)}</span>
     </button>
     <span class="at">vs</span>
     <button class="side-btn ${bSel?'selected':''}" data-matchup="${m.matchupId}" data-roster="${m.teamB.rosterId}">
-      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamB.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}${sideExtraHtml(m.teamB)}</span>
+      <span style="min-width:0;"><span class="nm">${escapeHtml(m.teamB.name)}</span>${isOwn?'<span class="own-tag">Your matchup</span>':''}${sideExtraHtml(m.teamB, ctx)}</span>
     </button>
   </div>`;
 }
 
-function bindBuilder(matchups, parlays, forUserId, isAdminEdit){
-  const root = document.getElementById('builder-root');
-  if(!root) return;
+/* Mounts a slip builder into `container`. Every bit of state (selected
+   legs, listeners, element lookups) is local to this one instance, so the
+   page's own builder and the admin-edit modal's builder can be open at the
+   same time without stepping on each other. Clicks are handled by a single
+   delegated listener, so toggling legs never stacks up extra handlers. */
+function mountBuilder(container, {matchups, forUserId, isAdminEdit, prefillLegs, prevContext, week, onSaved}){
+  const legs = prefillLegs ? [...prefillLegs] : [];
   const ownMid = ownMatchupIdFor(forUserId, matchups);
+  const rowsHtml = ()=> matchups.map(m=>matchupRowHtml(m, ownMid, legs, prevContext)).join('');
 
-  root.querySelectorAll('.side-btn').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const matchupId = parseInt(btn.dataset.matchup,10);
-      const rosterId = parseInt(btn.dataset.roster,10);
-      const existingIdx = S.builderLegs.findIndex(l=>l.matchupId===matchupId);
-      if(existingIdx>=0 && S.builderLegs[existingIdx].rosterId===rosterId){
-        S.builderLegs.splice(existingIdx,1); // toggle off
-      } else if(existingIdx>=0){
-        S.builderLegs[existingIdx] = {matchupId, rosterId}; // switch side
-      } else {
-        if(S.builderLegs.length>=MAX_LEGS) return;
-        S.builderLegs.push({matchupId, rosterId});
+  container.innerHTML = `
+  <div class="builder">
+    <div class="builder-top">
+      <div class="leg-counter">Legs selected: <b class="leg-count">${legs.length}</b> / ${MAX_LEGS} (min ${MIN_LEGS})</div>
+    </div>
+    <div class="matchup-picker">${rowsHtml()}</div>
+    <div class="builder-warn-slot"></div>
+    <div class="builder-actions">
+      <button class="btn primary submit-slip-btn">Lock in slip</button>
+    </div>
+  </div>`;
+
+  const picker = container.querySelector('.matchup-picker');
+  const countEl = container.querySelector('.leg-count');
+  const warnSlot = container.querySelector('.builder-warn-slot');
+  const submitBtn = container.querySelector('.submit-slip-btn');
+  const showWarn = msg => { warnSlot.innerHTML = msg ? `<div class="builder-warn">${escapeHtml(msg)}</div>` : ''; };
+
+  picker.addEventListener('click', e=>{
+    const btn = e.target.closest('.side-btn');
+    if(!btn) return;
+    const matchupId = parseInt(btn.dataset.matchup,10);
+    const rosterId = parseInt(btn.dataset.roster,10);
+    const idx = legs.findIndex(l=>l.matchupId===matchupId);
+    if(idx>=0 && legs[idx].rosterId===rosterId){
+      legs.splice(idx,1);                       // toggle off
+    } else if(idx>=0){
+      legs[idx] = {matchupId, rosterId};        // switch side
+    } else {
+      if(legs.length>=MAX_LEGS) return;
+      legs.push({matchupId, rosterId});
+    }
+    picker.innerHTML = rowsHtml();
+    countEl.textContent = legs.length;
+    showWarn('');
+  });
+
+  submitBtn.addEventListener('click', async ()=>{
+    const err = validateLegs(legs, ownMid);
+    if(err){ showWarn(err); return; }
+    showWarn('');
+    submitBtn.disabled = true; submitBtn.textContent = 'Locking in…';
+
+    try{
+      if(!isAdminEdit){
+        // This page's copy of the scores can be hours old — re-check the
+        // kickoff lock against fresh data before accepting the pick.
+        const fresh = await loadMatchupsForWeek(week, true);
+        if(weekHasStarted(fresh)){
+          await renderWeekDependent();
+          return;
+        }
       }
-      refreshBuilderUI(matchups, ownMid);
-    });
+
+      const legsWithNames = legs.map(l=>{
+        const m = matchups.find(mm=>mm.matchupId===l.matchupId);
+        const side = m.teamA.rosterId===l.rosterId ? m.teamA : m.teamB;
+        const opp  = m.teamA.rosterId===l.rosterId ? m.teamB : m.teamA;
+        return {matchupId:l.matchupId, rosterId:l.rosterId, teamName:side.name, opponentName:opp.name};
+      });
+      await saveParlay(week, forUserId, {
+        legs: legsWithNames,
+        legCount: legsWithNames.length,
+        submittedAt: new Date().toISOString(),
+        editedByAdmin: isAdminEdit,
+        season: S.season,
+        week,
+        teamName: S.usersById[forUserId].teamName,
+        ownerName: S.usersById[forUserId].ownerName,
+        potentialPoints: POINTS_TABLE[legsWithNames.length] || 0,
+      });
+      if(onSaved) onSaved();
+      // Admin edits are often correcting a past, already-scored week — a
+      // plain re-render wouldn't update the standings table above.
+      if(isAdminEdit){ await fullReload(); } else { await renderWeekDependent(); }
+    }catch(e){
+      console.error('Saving parlay failed:', e);
+      showWarn('Couldn’t save your slip — check your connection and try again.');
+      submitBtn.disabled = false; submitBtn.textContent = 'Lock in slip';
+    }
   });
-
-  document.getElementById('submit-slip-btn').addEventListener('click', async ()=>{
-    const err = validateLegs(S.builderLegs, ownMid);
-    const warnBox = document.getElementById('builder-warn');
-    if(err){ warnBox.innerHTML = `<div class="builder-warn">${err}</div>`; return; }
-    warnBox.innerHTML = '';
-
-    const btn = document.getElementById('submit-slip-btn');
-    btn.disabled = true; btn.textContent = 'Locking in…';
-
-    const legsWithNames = S.builderLegs.map(l=>{
-      const m = matchups.find(mm=>mm.matchupId===l.matchupId);
-      const side = m.teamA.rosterId===l.rosterId ? m.teamA : m.teamB;
-      const opp  = m.teamA.rosterId===l.rosterId ? m.teamB : m.teamA;
-      return {matchupId:l.matchupId, rosterId:l.rosterId, teamName:side.name, opponentName:opp.name};
-    });
-
-    const weekParlays = await loadParlaysForWeek(S.selectedWeek, true);
-    weekParlays[forUserId] = {
-      legs: legsWithNames,
-      legCount: legsWithNames.length,
-      submittedAt: new Date().toISOString(),
-      editedByAdmin: isAdminEdit,
-      season: S.season,
-      week: S.selectedWeek,
-      teamName: S.usersById[forUserId].teamName,
-      ownerName: S.usersById[forUserId].ownerName,
-      potentialPoints: POINTS_TABLE[legsWithNames.length] || 0,
-    };
-    await saveParlaysForWeek(S.selectedWeek, weekParlays);
-    // Admin edits are often correcting a past, already-scored week — a
-    // plain re-render wouldn't pick that up in the standings table above.
-    if(isAdminEdit){ await fullReload(); } else { await renderWeekDependent(); }
-  });
-}
-
-function refreshBuilderUI(matchups, ownMid){
-  document.getElementById('leg-count').textContent = S.builderLegs.length;
-  document.getElementById('matchup-picker').innerHTML = matchups.map(m=>matchupRowHtml(m, ownMid)).join('');
-  // re-bind since we replaced innerHTML
-  bindBuilder(matchups, S.parlaysCache[S.selectedWeek]||{}, S.builderTarget, S.builderTarget!==S.currentUserId);
-  document.getElementById('builder-warn').innerHTML = '';
 }
 
 function validateLegs(legs, ownMid){
@@ -1977,28 +1993,28 @@ function validateLegs(legs, ownMid){
 }
 
 /* Admin: open a builder for any user, in a modal */
-async function openAdminBuilder(matchups, parlays, targetUserId){
+async function openAdminBuilder(targetUserId){
+  const week = S.selectedWeek;
+  const [matchups, parlays] = await Promise.all([loadMatchupsForWeek(week), loadParlaysForWeek(week)]);
   const existing = parlays[targetUserId];
-  S.builderPrevContext = S.selectedWeek >= 2 ? await getPrevWeekContext(S.selectedWeek - 1, targetUserId) : null;
-  const html = renderBuilder(matchups, targetUserId, existing ? existing.legs : []);
+  const prevContext = week >= 2 ? await getPrevWeekContext(week - 1, targetUserId) : null;
+
   const wrap = document.createElement('div');
   wrap.className = 'modal-backdrop';
   wrap.innerHTML = `<div class="modal" style="width:min(560px,92vw);">
-    <h3>Edit ${escapeHtml(S.usersById[targetUserId].teamName)}'s slip — week ${S.selectedWeek}</h3>
-    <div id="admin-builder-slot"></div>
+    <h3>Edit ${escapeHtml(S.usersById[targetUserId].teamName)}'s slip — week ${week}</h3>
+    <div class="admin-builder-slot"></div>
     <div class="modal-actions" style="margin-top:10px;">
-      <button class="btn" id="admin-cancel">Cancel</button>
+      <button class="btn admin-cancel">Cancel</button>
     </div>
   </div>`;
   document.getElementById('modal-root').appendChild(wrap);
-  document.getElementById('admin-builder-slot').innerHTML = html;
-  bindBuilder(matchups, parlays, targetUserId, true);
-
-  document.getElementById('admin-cancel').addEventListener('click', ()=> wrap.remove());
-  // after a successful submit inside the admin builder, renderWeekDependent() runs and rebuilds
-  // the board — close this modal once that happens.
-  const origSubmit = document.getElementById('submit-slip-btn');
-  origSubmit.addEventListener('click', ()=>{ setTimeout(()=>wrap.remove(), 50); }, {once:true});
+  wrap.querySelector('.admin-cancel').addEventListener('click', ()=> wrap.remove());
+  mountBuilder(wrap.querySelector('.admin-builder-slot'), {
+    matchups, forUserId:targetUserId, isAdminEdit:true, week, prevContext,
+    prefillLegs: existing && Array.isArray(existing.legs) ? existing.legs.map(l=>({matchupId:l.matchupId, rosterId:l.rosterId})) : [],
+    onSaved: ()=> wrap.remove(),   // only closes after a successful save
+  });
 }
 
 /* Admin: confirm + delete a slip entirely */
@@ -2018,7 +2034,13 @@ function openDeleteConfirm(userId, week){
   document.getElementById('del-confirm').addEventListener('click', async ()=>{
     const btn = document.getElementById('del-confirm');
     btn.disabled = true; btn.textContent = 'Deleting…';
-    await deleteParlay(userId, week);
+    try{
+      await deleteParlay(userId, week);
+    }catch(e){
+      console.error('Delete failed:', e);
+      btn.disabled = false; btn.textContent = 'Delete failed — retry';
+      return;
+    }
     wrap.remove();
     await fullReload();
   });
@@ -2063,6 +2085,17 @@ function openAdminModal(){
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+/* Delegated handlers for admin edit/delete links and the retry button. One
+   listener for the whole page — the links are re-rendered constantly, and
+   binding per-render stacked duplicate handlers (opening two modals). */
+document.addEventListener('click', e=>{
+  const editBtn = e.target.closest('[data-edit-user]');
+  if(editBtn){ openAdminBuilder(editBtn.dataset.editUser); return; }
+  const delBtn = e.target.closest('[data-delete-user]');
+  if(delBtn){ openDeleteConfirm(delBtn.dataset.deleteUser, S.selectedWeek); return; }
+  if(e.target.closest('[data-retry-week]')) renderWeekDependent();
+});
 
 /* Tap/click-to-reveal popup for the matchup-difficulty tags (native title
    hover tooltips don't work on touch devices at all, and can get clipped
@@ -2136,8 +2169,12 @@ function csvEscape(val){
 
 async function buildSeasonCsvRows(){
   const rows = [['Week','Team','Owner','Legs','LegCount','Result','Points']];
-  for(let w=1; w<=S.regularWeeks; w++){
-    const [parlays, matchups] = await Promise.all([loadParlaysForWeek(w), loadMatchupsForWeek(w)]);
+  const weeks = [];
+  for(let w=1; w<=S.regularWeeks; w++) weeks.push(w);
+  const weekData = await Promise.all(weeks.map(w=>Promise.all([loadParlaysForWeek(w), loadMatchupsForWeek(w)])));
+  for(let i=0; i<weeks.length; i++){
+    const w = weeks[i];
+    const [parlays, matchups] = weekData[i];
     const final = isWeekFinal(w);
     Object.entries(parlays).forEach(([userId, pick])=>{
       const u = S.usersById[userId];
@@ -2187,9 +2224,17 @@ async function exportSeasonCsv(){
 }
 
 async function fullReload(){
-  await computeScoreboard();
-  renderScoreboard();
-  await renderWeekDependent();
+  // Standings and the week view load concurrently (they share the same
+  // promise-cached requests) so a long season doesn't delay the board.
+  const tbody = document.getElementById('scoreboard-tbody');
+  if(!tbody.children.length){
+    tbody.innerHTML = [1,2,3].map(()=>`<tr><td colspan="4"><div class="skeleton-line" style="margin:6px 0;"></div></td></tr>`).join('');
+  }
+  const standings = computeScoreboard().then(renderScoreboard).catch(err=>{
+    console.error('Standings failed:', err);
+    tbody.innerHTML = `<tr><td colspan="4" class="state-msg">Couldn’t load standings — try Refresh scores.</td></tr>`;
+  });
+  await Promise.all([standings, renderWeekDependent()]);
 }
 
 async function init(){
@@ -2204,11 +2249,14 @@ async function init(){
 
   document.getElementById('who-select').addEventListener('change', e=>{
     S.currentUserId = e.target.value;
-    renderWeekDependent();
+    refreshYourSlip();
   });
   document.getElementById('admin-btn').addEventListener('click', openAdminModal);
   document.getElementById('refresh-btn').addEventListener('click', ()=>{
-    S.matchupsCache = {};
+    // Drop everything that can change during the week (scores, picks,
+    // transactions, projections); keep the big static data (players,
+    // schedule, completed-week stats).
+    S.matchupsCache = {}; S.parlaysCache = {}; S.txCache = {}; S.projCache = {};
     fullReload();
   });
   document.getElementById('export-csv-btn').addEventListener('click', exportSeasonCsv);
