@@ -1,0 +1,74 @@
+name: Parlay bot tick
+
+# One workflow, every 5 minutes, running all the frequent jobs in sequence
+# (instead of three separate workflows each paying for its own runner
+# start-up, checkout and Node setup).
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_snapshot:
+        description: "Test: screenshot + post the board right now, ignoring kickoff timing"
+        type: boolean
+        default: false
+
+# GitHub sometimes delays scheduled runs and then fires several back to back.
+# Overlapping runs could both post the same Discord message, so run one at a
+# time (a newer pending run replaces an older pending one).
+concurrency:
+  group: parlay-bot-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    env:
+      FIREBASE_PROJECT_ID: fantasy-parlay
+      SLEEPER_LEAGUE_ID: "1389693561678606336"
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # A failure in one job shouldn't stop the others, hence continue-on-error.
+      - name: Post newly placed parlays
+        run: node scripts/notify-submissions.js
+        continue-on-error: true
+
+      - name: Picks-lock reminder
+        run: node scripts/lock-reminder.js
+        continue-on-error: true
+
+      # Cheap: a couple of small API calls, no browser.
+      - name: Check whether kickoff is close
+        id: check
+        run: node scripts/check-kickoff.js
+        continue-on-error: true
+
+      # Everything below only runs on the ~1 execution per week where the
+      # check says it's time (or when you force it from the Actions tab).
+      - name: Cache Playwright browser
+        if: steps.check.outputs.should_run == 'true' || inputs.force_snapshot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
+      - name: Install dependencies
+        if: steps.check.outputs.should_run == 'true' || inputs.force_snapshot
+        run: npm install
+
+      - name: Install Playwright's browser
+        if: steps.check.outputs.should_run == 'true' || inputs.force_snapshot
+        run: npx playwright install --with-deps chromium
+
+      - name: Screenshot the board and post to Discord
+        if: steps.check.outputs.should_run == 'true' || inputs.force_snapshot
+        run: node scripts/post-board-snapshot.js
+        env:
+          FORCE_SNAPSHOT: ${{ inputs.force_snapshot }}
+          # EDIT THIS to your actual GitHub Pages URL before deploying.
+          SITE_URL: "https://YOUR_USERNAME.github.io/YOUR_REPO/"
