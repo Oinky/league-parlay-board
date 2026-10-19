@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The Parlay Board</title>
+<meta name="theme-color" content="#F5F5F7">
 <link rel="preconnect" href="https://api.sleeper.app">
 <link rel="preconnect" href="https://api.sleeper.com">
 <link rel="preconnect" href="https://firestore.googleapis.com">
@@ -15,6 +16,8 @@
       var t = localStorage.getItem('parlay-theme');
       if(!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
       document.documentElement.setAttribute('data-theme', t);
+      var tc = document.querySelector('meta[name=theme-color]');
+      if(tc) tc.setAttribute('content', t==='dark' ? '#000000' : '#F5F5F7');
     }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
   })();
 </script>
@@ -23,7 +26,7 @@
     --bg:#F5F5F7;
     --surface:#FFFFFF;
     --surface-alt:#EDEEF1;
-    --border:#E2E3E6;
+    --border:rgba(60,60,67,0.15);
     --text:#1D1D1F;
     --text-dim:#6E6E73;
     --accent:#0A66FF;
@@ -35,17 +38,17 @@
     --loss-soft:#FCE8E6;
     --warn:#B5730A;
     --warn-soft:#FDF0DA;
-    --shadow-sm:0 1px 2px rgba(0,0,0,0.05);
-    --shadow-md:0 2px 6px rgba(0,0,0,0.05), 0 8px 24px rgba(0,0,0,0.06);
-    --radius-lg:18px;
-    --radius-md:12px;
-    --radius-sm:9px;
+    --shadow-sm:0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
+    --shadow-md:0 4px 8px -2px rgba(16,24,40,0.06), 0 14px 28px -6px rgba(16,24,40,0.12);
+    --radius-lg:22px;
+    --radius-md:14px;
+    --radius-sm:10px;
   }
   :root[data-theme="dark"]{
     --bg:#000000;
     --surface:#000000;
     --surface-alt:#121214;
-    --border:#3A3A3C;
+    --border:rgba(255,255,255,0.16);
     --text:#F5F5F7;
     --text-dim:#98989D;
     --accent:#0A84FF;
@@ -636,6 +639,130 @@
     .tx-players .tx-player:last-child{border-bottom:none;}
     .tx-players .tx-player::after{content:none;}
   }
+
+  /* =====================================================================
+     MODERN LAYER — refinements on top of the base styles above
+     ===================================================================== */
+  :root{color-scheme:light;}
+  :root[data-theme="dark"]{color-scheme:dark;}
+  body{letter-spacing:-0.006em; text-rendering:optimizeLegibility;}
+  h1,h2,h3{letter-spacing:-0.025em;}
+  .brand h1{font-size:clamp(26px,4vw,36px); font-weight:800; letter-spacing:-0.035em;}
+
+  /* sticky frosted-glass tab bar with a sliding selection pill */
+  #screen-nav-wrap{
+    position:sticky; top:0; z-index:30;
+    max-width:none; margin:0; padding:10px 0;
+    background:var(--bg);
+    background:color-mix(in srgb, var(--bg) 78%, transparent);
+    -webkit-backdrop-filter:saturate(180%) blur(18px);
+    backdrop-filter:saturate(180%) blur(18px);
+  }
+  .screen-nav-inner{max-width:1100px; margin:0 auto; padding:0 clamp(20px,5vw,56px); display:flex;}
+  .seg-nav{position:relative; min-width:0; max-width:100%; flex:0 1 auto; border-radius:13px; padding:4px;}
+  .seg-indicator{
+    position:absolute; top:4px; bottom:4px; left:0; width:0; z-index:0; pointer-events:none;
+    border-radius:10px; background:var(--surface);
+    box-shadow:var(--shadow-sm), 0 0 0 0.5px var(--border);
+    transition:transform .32s cubic-bezier(.2,.8,.2,1), width .32s cubic-bezier(.2,.8,.2,1);
+  }
+  :root[data-theme="dark"] .seg-indicator{background:#2A2A2D;}
+  .seg-tab{position:relative; z-index:1; border-radius:10px; transition:color .2s ease, transform .12s ease;}
+  .seg-tab.active{background:none; box-shadow:none; color:var(--text);}
+  .seg-tab:not(.active):hover{color:var(--text);}
+
+  /* tactile feedback */
+  .btn,.side-btn,.edit-link{transition:transform .12s ease, background .15s ease, border-color .15s ease, color .15s ease;}
+  .btn:active,.seg-tab:active,.side-btn:active{transform:scale(.97);}
+  button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+  .seg-tab:focus-visible{outline-offset:-2px;}
+
+  /* custom select chevron */
+  select{
+    -webkit-appearance:none; appearance:none; padding-right:38px;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%236E6E73' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 15px center; background-size:12px 8px;
+  }
+  :root[data-theme="dark"] select{
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%2398989D' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+
+  /* selected pick gets a check badge */
+  .side-btn{position:relative;}
+  .side-btn.selected::after{
+    content:""; position:absolute; top:7px; right:7px; width:16px; height:16px; border-radius:50%;
+    background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/10px 10px no-repeat;
+  }
+  .side-btn.selected .nm{padding-right:18px;}
+
+  /* standings: rank medals + row hover */
+  .rank1-row .avatar-fallback{background:var(--surface);}
+  .rank-badge{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:24px; height:24px; border-radius:50%;
+    font-size:12px; font-weight:700; color:var(--text-dim); font-variant-numeric:tabular-nums;
+  }
+  .rank-badge.r1{background:linear-gradient(145deg,#FFD866,#F2A900); color:#4A3300;}
+  .rank-badge.r2{background:linear-gradient(145deg,#E8EAEE,#B7BCC6); color:#3A3F4A;}
+  .rank-badge.r3{background:linear-gradient(145deg,#F1C9A5,#C98A55); color:#4A2A10;}
+  @media (hover:hover){
+    .scoreboard-table tbody tr:not(.rank1-row):hover td{background:var(--surface-alt);}
+    .board-grid .ticket{transition:transform .22s cubic-bezier(.2,.8,.2,1), box-shadow .22s ease;}
+    .board-grid .ticket:hover{transform:translateY(-2px); box-shadow:var(--shadow-md);}
+  }
+
+  /* motion: screens and cards ease in; pick-percentage bars grow */
+  @keyframes riseIn{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:none;}}
+  @keyframes growX{from{transform:scaleX(0);} to{transform:scaleX(1);}}
+  @keyframes fadeIn{from{opacity:0;} to{opacity:1;}}
+  @keyframes popIn{from{opacity:0; transform:translateY(8px) scale(.97);} to{opacity:1; transform:none;}}
+  @keyframes sheetUp{from{transform:translateY(100%);} to{transform:none;}}
+  .screen-enter{animation:riseIn .35s cubic-bezier(.2,.8,.2,1);}
+  .board-grid > .ticket, .roster-team-grid > .ticket{animation:riseIn .4s cubic-bezier(.2,.8,.2,1) backwards;}
+  .board-grid > .ticket:nth-child(2), .roster-team-grid > .ticket:nth-child(2){animation-delay:0.035s;}
+  .board-grid > .ticket:nth-child(3), .roster-team-grid > .ticket:nth-child(3){animation-delay:0.070s;}
+  .board-grid > .ticket:nth-child(4), .roster-team-grid > .ticket:nth-child(4){animation-delay:0.105s;}
+  .board-grid > .ticket:nth-child(5), .roster-team-grid > .ticket:nth-child(5){animation-delay:0.140s;}
+  .board-grid > .ticket:nth-child(6), .roster-team-grid > .ticket:nth-child(6){animation-delay:0.175s;}
+  .board-grid > .ticket:nth-child(7), .roster-team-grid > .ticket:nth-child(7){animation-delay:0.210s;}
+  .board-grid > .ticket:nth-child(8), .roster-team-grid > .ticket:nth-child(8){animation-delay:0.245s;}
+  .board-grid > .ticket:nth-child(9), .roster-team-grid > .ticket:nth-child(9){animation-delay:0.280s;}
+  .board-grid > .ticket:nth-child(10), .roster-team-grid > .ticket:nth-child(10){animation-delay:0.315s;}
+  .board-grid > .ticket:nth-child(11), .roster-team-grid > .ticket:nth-child(11){animation-delay:0.350s;}
+  .board-grid > .ticket:nth-child(12), .roster-team-grid > .ticket:nth-child(12){animation-delay:0.385s;}
+  .pick-pct-fill{transform-origin:left center; animation:growX .7s cubic-bezier(.2,.8,.2,1) backwards;}
+
+  /* modals: blurred backdrop, pop-in; bottom sheets on phones */
+  .modal-backdrop{-webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); animation:fadeIn .2s ease;}
+  .modal{animation:popIn .28s cubic-bezier(.2,.9,.3,1.05);}
+  @media (max-width:520px){
+    .modal-backdrop{align-items:flex-end; padding:0;}
+    .modal{
+      width:100% !important; max-height:90vh; overflow-y:auto;
+      border-bottom-left-radius:0; border-bottom-right-radius:0;
+      padding-bottom:calc(22px + env(safe-area-inset-bottom));
+      animation:sheetUp .32s cubic-bezier(.2,.9,.3,1);
+    }
+  }
+
+  /* toasts */
+  #toast-root{
+    position:fixed; left:50%; transform:translateX(-50%); z-index:80;
+    bottom:calc(20px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:none;
+  }
+  .toast{
+    background:var(--text); color:var(--bg); padding:10px 18px; border-radius:980px;
+    font-size:13.5px; font-weight:600; box-shadow:var(--shadow-md);
+    animation:popIn .28s cubic-bezier(.2,.9,.3,1.05);
+    transition:opacity .3s ease, transform .3s ease;
+  }
+  .toast.error{background:var(--loss); color:#fff;}
+  .toast.leaving{opacity:0; transform:translateY(6px);}
+
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms !important; animation-delay:0s !important; transition-duration:.01ms !important; scroll-behavior:auto !important;}
+  }
 </style>
 </head>
 <body>
@@ -655,12 +782,15 @@
 </header>
 
 <div id="screen-nav-wrap">
-  <div class="seg-nav" id="screen-nav">
-    <button class="seg-tab active" data-screen="board">Board</button>
-    <button class="seg-tab" data-screen="schedule">Schedule</button>
-    <button class="seg-tab" data-screen="roster">Roster</button>
-    <button class="seg-tab" data-screen="transactions">Transactions</button>
-    <button class="seg-tab" data-screen="stats">Stats</button>
+  <div class="screen-nav-inner">
+    <div class="seg-nav" id="screen-nav">
+      <span class="seg-indicator" aria-hidden="true"></span>
+      <button class="seg-tab active" data-screen="board">Board</button>
+      <button class="seg-tab" data-screen="schedule">Schedule</button>
+      <button class="seg-tab" data-screen="roster">Roster</button>
+      <button class="seg-tab" data-screen="transactions">Transactions</button>
+      <button class="seg-tab" data-screen="stats">Stats</button>
+    </div>
   </div>
 </div>
 
@@ -742,6 +872,7 @@
 <footer class="pagefoot">Scoring &amp; matchups pulled live from Sleeper. Points: 2 legs=1 · 3=3 · 4=6 · 5=10 · 6=15, all legs must hit. Picks close once any team has scored, and open only once the prior week is final.</footer>
 
 <div id="modal-root"></div>
+<div id="toast-root" aria-live="polite"></div>
 
 <!-- Firebase (compat build — no bundler needed, works from a plain static file) -->
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
@@ -1242,9 +1373,9 @@ async function renderStatsScreen(){
           ${streakRows.map(r=>`
             <tr>
               <td><div class="team-cell-inner">${ticketAvatar(r.u,'sm')}<div class="team-name">${escapeHtml(r.u.teamName)}</div></div></td>
-              <td class="pts-cell">${r.current>0 ? '🔥 '+r.current : '—'}</td>
+              <td class="pts-cell">${r.current>0 ? '🔥 '+r.current : '<span style="color:var(--text-dim); font-weight:400;">—</span>'}</td>
               <td class="record-cell">${r.longest}</td>
-              <td class="record-cell">${r.bestWeek} pts</td>
+              <td class="record-cell">${r.bestWeek} pt${r.bestWeek===1?'':'s'}</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -1331,7 +1462,7 @@ function renderScoreboard(){
   const tbody = document.getElementById('scoreboard-tbody');
   tbody.innerHTML = rows.map((r,i)=>`
     <tr class="${i===0 && r.points>0 ? 'rank1-row':''}">
-      <td class="rank-cell">${i+1}</td>
+      <td class="rank-cell"><span class="rank-badge ${i<3 && r.points>0 ? 'r'+(i+1) : ''}">${i+1}</span></td>
       <td>
         <div class="team-cell-inner">
           ${ticketAvatar(r.u, 'sm')}
@@ -1950,6 +2081,7 @@ function mountBuilder(container, {matchups, forUserId, isAdminEdit, prefillLegs,
         // kickoff lock against fresh data before accepting the pick.
         const fresh = await loadMatchupsForWeek(week, true);
         if(weekHasStarted(fresh)){
+          showToast('Picks just closed — games have started', 'error');
           await renderWeekDependent();
           return;
         }
@@ -1972,6 +2104,7 @@ function mountBuilder(container, {matchups, forUserId, isAdminEdit, prefillLegs,
         ownerName: S.usersById[forUserId].ownerName,
         potentialPoints: POINTS_TABLE[legsWithNames.length] || 0,
       });
+      showToast(isAdminEdit ? 'Slip updated' : 'Parlay locked in');
       if(onSaved) onSaved();
       // Admin edits are often correcting a past, already-scored week — a
       // plain re-render wouldn't update the standings table above.
@@ -1979,6 +2112,7 @@ function mountBuilder(container, {matchups, forUserId, isAdminEdit, prefillLegs,
     }catch(e){
       console.error('Saving parlay failed:', e);
       showWarn('Couldn’t save your slip — check your connection and try again.');
+      showToast('Couldn’t save — check your connection', 'error');
       submitBtn.disabled = false; submitBtn.textContent = 'Lock in slip';
     }
   });
@@ -2042,6 +2176,7 @@ function openDeleteConfirm(userId, week){
       return;
     }
     wrap.remove();
+    showToast('Slip deleted');
     await fullReload();
   });
 }
@@ -2120,6 +2255,32 @@ document.addEventListener('click', e=>{
   }
 });
 
+/* Small non-blocking confirmation/error messages (replaces alert()). */
+function showToast(message, kind){
+  const root = document.getElementById('toast-root');
+  if(!root) return;
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind==='error' ? ' error' : '');
+  el.textContent = message;
+  root.appendChild(el);
+  setTimeout(()=>{ el.classList.add('leaving'); setTimeout(()=>el.remove(), 320); }, kind==='error' ? 4200 : 2600);
+}
+
+/* Slides the selection pill under the active tab, and keeps that tab in
+   view when the tab bar is horizontally scrollable (phones). */
+function positionSegIndicator(animate){
+  const nav = document.getElementById('screen-nav');
+  if(!nav) return;
+  const ind = nav.querySelector('.seg-indicator');
+  const act = nav.querySelector('.seg-tab.active');
+  if(!ind || !act) return;
+  if(!animate) ind.style.transition = 'none';
+  ind.style.width = act.offsetWidth + 'px';
+  ind.style.transform = `translateX(${act.offsetLeft}px)`;
+  if(!animate){ void ind.offsetWidth; ind.style.transition = ''; }
+  if(act.scrollIntoView) act.scrollIntoView({inline:'center', block:'nearest', behavior: animate ? 'smooth' : 'auto'});
+}
+
 function skeletonCardHtml(lines){
   lines = lines || 4;
   let inner = '<div class="skeleton-line skeleton-title"></div>';
@@ -2147,6 +2308,8 @@ function storeTheme(t){
 }
 function applyTheme(t){
   document.documentElement.setAttribute('data-theme', t);
+  const tc = document.querySelector('meta[name=theme-color]');
+  if(tc) tc.setAttribute('content', t==='dark' ? '#000000' : '#F5F5F7');
   const btn = document.getElementById('theme-toggle');
   if(btn) btn.textContent = t==='dark' ? '☀️' : '🌙';
 }
@@ -2215,9 +2378,10 @@ async function exportSeasonCsv(){
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    showToast('Season exported');
   }catch(e){
     console.error('CSV export failed:', e);
-    alert('Export failed — check the browser console for details.');
+    showToast('Export failed — see the browser console', 'error');
   }finally{
     btn.disabled = false; btn.textContent = origText;
   }
@@ -2269,17 +2433,26 @@ async function init(){
       document.querySelectorAll('#screen-nav .seg-tab').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
       S.screen = btn.dataset.screen;
-      document.getElementById('board-screen').style.display = S.screen==='board' ? '' : 'none';
-      document.getElementById('schedule-screen').style.display = S.screen==='schedule' ? '' : 'none';
-      document.getElementById('roster-screen').style.display = S.screen==='roster' ? '' : 'none';
-      document.getElementById('transactions-screen').style.display = S.screen==='transactions' ? '' : 'none';
-      document.getElementById('stats-screen').style.display = S.screen==='stats' ? '' : 'none';
+      ['board','schedule','roster','transactions','stats'].forEach(name=>{
+        const el = document.getElementById(`${name}-screen`);
+        el.style.display = S.screen===name ? '' : 'none';
+        if(S.screen===name){ el.classList.remove('screen-enter'); void el.offsetWidth; el.classList.add('screen-enter'); }
+      });
+      positionSegIndicator(true);
+      // If the user was scrolled deep into the previous tab, bring the new
+      // tab's content to the top (just under the sticky tab bar).
+      const hdrH = document.querySelector('header.top').offsetHeight;
+      if(window.scrollY > hdrH){ try{ window.scrollTo({top:hdrH}); }catch(e){} }
       if(S.screen==='schedule') renderScheduleScreen();
       if(S.screen==='roster') renderRosterScreen();
       if(S.screen==='transactions') renderTransactionsScreen();
       if(S.screen==='stats') renderStatsScreen();
     });
   });
+
+  positionSegIndicator(false);
+  window.addEventListener('resize', ()=>positionSegIndicator(false));
+  if(document.fonts && document.fonts.ready) document.fonts.ready.then(()=>positionSegIndicator(false));
 
   await fullReload();
 }
