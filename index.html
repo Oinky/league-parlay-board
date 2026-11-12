@@ -763,6 +763,27 @@
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.01ms !important; animation-delay:0s !important; transition-duration:.01ms !important; scroll-behavior:auto !important;}
   }
+
+  /* playoff odds */
+  .odds-cell{width:1%; white-space:nowrap;}
+  .odds-wrap{display:flex; align-items:center; justify-content:flex-end; gap:10px;}
+  .odds-bar{width:96px; height:8px; background:var(--surface-alt); border-radius:4px; overflow:hidden;}
+  .odds-fill{height:100%; border-radius:4px; transform-origin:left center; animation:growX .7s cubic-bezier(.2,.8,.2,1) backwards;}
+  .odds-high{background:var(--win);} .odds-mid{background:var(--accent);} .odds-low{background:var(--loss);}
+  .odds-val{min-width:48px; text-align:right; font-weight:700; font-variant-numeric:tabular-nums;}
+  .scoreboard-table tr.playoff-cutoff td{border-bottom:2px dashed var(--accent);}
+  @media (max-width:520px){
+    .hide-sm{display:none;}
+    /* keep the odds column on screen: tighter cells, smaller bar, no avatars */
+    #playoffs-list .scoreboard-table th, #playoffs-list .scoreboard-table td{padding:10px 8px;}
+    #playoffs-list .avatar, #playoffs-list .avatar-fallback{display:none;}
+    #playoffs-list .odds-wrap{gap:8px;}
+    .odds-bar{width:40px;}
+    .odds-val{min-width:42px;}
+  }
+  @media (max-width:340px){
+    .odds-bar{display:none;}   /* very small phones: the percentage is what matters */
+  }
 </style>
 </head>
 <body>
@@ -790,6 +811,7 @@
       <button class="seg-tab" data-screen="roster">Roster</button>
       <button class="seg-tab" data-screen="transactions">Transactions</button>
       <button class="seg-tab" data-screen="stats">Stats</button>
+      <button class="seg-tab" data-screen="playoffs">Playoffs</button>
     </div>
   </div>
 </div>
@@ -867,6 +889,10 @@
 
 <div id="stats-screen" style="display:none;">
   <main id="stats-list"></main>
+</div>
+
+<div id="playoffs-screen" style="display:none;">
+  <main id="playoffs-list"></main>
 </div>
 
 <footer class="pagefoot">Scoring &amp; matchups pulled live from Sleeper. Points: 2 legs=1 · 3=3 · 4=6 · 5=10 · 6=15, all legs must hit. Picks close once any team has scored, and open only once the prior week is final.</footer>
@@ -1321,6 +1347,248 @@ function computeStreaks(historyArr){
   }
   const bestWeek = (historyArr||[]).reduce((best,h)=> h.pts>best ? h.pts : best, 0);
   return {current, longest, bestWeek};
+}
+
+/* =========================================================================
+   PLAYOFF ODDS — Monte Carlo simulation of the rest of the regular season
+   ========================================================================= */
+const PLAYOFF_SPOTS = 6;      // the top N teams (by record, then points for) make the playoffs
+const PLAYOFF_SIMS = 20000;   // simulated seasons
+const PRIOR_GAMES = 4;        // pulls each team's scoring average toward the league average
+const PRIOR_SD = 25, PRIOR_SD_WEIGHT = 8;  // weekly-score spread assumed until enough games are played
+
+/* Small seeded random generator, so the same standings always produce the
+   same odds (no jitter every time the tab is opened). */
+function mulberry32(seed){
+  let a = seed>>>0;
+  return function(){
+    a = (a + 0x6D2B79F5)>>>0;
+    let t = Math.imul(a ^ (a>>>15), 1 | a);
+    t = (t + Math.imul(t ^ (t>>>7), 61 | t)) ^ t;
+    return ((t ^ (t>>>14))>>>0) / 4294967296;
+  };
+}
+function makeNormalGenerator(rng){
+  let spare = null;
+  return function(){
+    if(spare !== null){ const v = spare; spare = null; return v; }
+    let u = 0; while(u === 0) u = rng();
+    const v = rng();
+    const mag = Math.sqrt(-2*Math.log(u));
+    spare = mag*Math.sin(2*Math.PI*v);
+    return mag*Math.cos(2*Math.PI*v);
+  };
+}
+
+/* Pure function (no DOM / network), so it can be tested on its own.
+     teams:     [{wins, losses, ties, pf, scores:[weekly points…]}]  — completed games only
+     remaining: [[teamIndexA, teamIndexB], …]                       — every unplayed matchup
+   Each team's weekly score is modeled as a normal distribution centered on
+   its own scoring average (shrunk toward the league average while the
+   sample is small), with a league-wide spread. Every simulated matchup draws
+   a score for both teams, so wins AND points-for (the tiebreaker) come out
+   of the same simulation. */
+function simulatePlayoffOdds({teams, remaining, spots, sims, seed}){
+  const n = teams.length;
+  const mean = arr => arr.reduce((a,b)=>a+b,0)/arr.length;
+
+  const allScores = [];
+  teams.forEach(t=>t.scores.forEach(x=>allScores.push(x)));
+  const leagueMean = allScores.length ? mean(allScores) : 100;
+
+  let ss = 0, df = 0;
+  teams.forEach(t=>{
+    if(t.scores.length < 2) return;
+    const m = mean(t.scores);
+    t.scores.forEach(x=>{ ss += (x-m)*(x-m); });
+    df += t.scores.length - 1;
+  });
+  const sigma = Math.sqrt((ss + PRIOR_SD_WEIGHT*PRIOR_SD*PRIOR_SD) / (df + PRIOR_SD_WEIGHT));
+
+  const mu = teams.map(t=>{
+    const k = t.scores.length;
+    const m = k ? mean(t.scores) : leagueMean;
+    return (k*m + PRIOR_GAMES*leagueMean) / (k + PRIOR_GAMES);
+  });
+
+  const baseWins = Float64Array.from(teams.map(t=>t.wins + 0.5*t.ties));
+  const basePF = Float64Array.from(teams.map(t=>t.pf));
+  const ra = Int32Array.from(remaining.map(r=>r[0]));
+  const rb = Int32Array.from(remaining.map(r=>r[1]));
+
+  const normal = makeNormalGenerator(mulberry32(seed));
+  const wins = new Float64Array(n), pf = new Float64Array(n);
+  const order = Array.from({length:n}, (_,i)=>i);
+  const madeCount = new Float64Array(n), winsSum = new Float64Array(n);
+  const seedCount = Array.from({length:n}, ()=>new Float64Array(n));
+
+  for(let s=0; s<sims; s++){
+    wins.set(baseWins); pf.set(basePF);
+    for(let g=0; g<ra.length; g++){
+      const a = ra[g], b = rb[g];
+      const sa = mu[a] + sigma*normal();
+      const sb = mu[b] + sigma*normal();
+      pf[a] += sa; pf[b] += sb;
+      if(sa > sb) wins[a] += 1; else if(sb > sa) wins[b] += 1; else { wins[a] += 0.5; wins[b] += 0.5; }
+    }
+    order.sort((x,y)=> (wins[y]-wins[x]) || (pf[y]-pf[x]));
+    for(let r=0; r<n; r++){
+      const t = order[r];
+      seedCount[t][r] += 1;
+      if(r < spots) madeCount[t] += 1;
+    }
+    for(let i=0; i<n; i++) winsSum[i] += wins[i];
+  }
+
+  return {
+    sigma, leagueMean, mu,
+    teams: teams.map((_,i)=>({
+      playoffPct: 100*madeCount[i]/sims,
+      seedPct: Array.from(seedCount[i], c=>100*c/sims),
+      avgWins: winsSum[i]/sims,
+    })),
+  };
+}
+
+/* Builds the simulation inputs from Sleeper data: completed weeks become
+   each team's record and scoring history; every week from the current one
+   through the end of the regular season is a still-to-be-played matchup. */
+async function loadPlayoffInputs(){
+  const weeks = [];
+  for(let w=1; w<=S.regularWeeks; w++) weeks.push(w);
+  const allMatchups = await Promise.all(weeks.map(w=>loadMatchupsForWeek(w)));
+
+  const idx = {};
+  S.users.forEach((u,i)=>{ idx[u.rosterId] = i; });
+  const teams = S.users.map(u=>({user:u, wins:0, losses:0, ties:0, pf:0, scores:[]}));
+  const remaining = [];
+  const emptyWeeks = [];
+
+  weeks.forEach((w,i)=>{
+    const matchups = allMatchups[i];
+    if(isWeekFinal(w)){
+      matchups.forEach(m=>{
+        const a = teams[idx[m.teamA.rosterId]], b = teams[idx[m.teamB.rosterId]];
+        if(!a || !b) return;
+        const pa = m.teamA.points, pb = m.teamB.points;
+        if(typeof pa !== 'number' || typeof pb !== 'number') return;
+        a.pf += pa; b.pf += pb; a.scores.push(pa); b.scores.push(pb);
+        if(pa > pb){ a.wins++; b.losses++; } else if(pb > pa){ b.wins++; a.losses++; } else { a.ties++; b.ties++; }
+      });
+    } else {
+      if(matchups.length === 0) emptyWeeks.push(w);
+      matchups.forEach(m=>{
+        const ia = idx[m.teamA.rosterId], ib = idx[m.teamB.rosterId];
+        if(ia !== undefined && ib !== undefined) remaining.push([ia, ib]);
+      });
+    }
+  });
+  return {teams, remaining, emptyWeeks};
+}
+
+function formatOdds(p){
+  if(p >= 100) return '✓ In';
+  if(p <= 0) return 'Out';
+  if(p < 1) return '<1%';
+  if(p > 99) return '>99%';
+  return p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`;
+}
+
+async function renderPlayoffsScreen(){
+  const box = document.getElementById('playoffs-list');
+  const token = S.playoffToken = (S.playoffToken||0) + 1;
+  const header = `
+    <h2>Playoff odds</h2>
+    <p class="block-sub">Top ${PLAYOFF_SPOTS} make the playoffs. Odds come from simulating the rest of the regular season ${PLAYOFF_SIMS.toLocaleString()} times using the real remaining matchups.</p>`;
+  box.innerHTML = `<section class="block">${header}${skeletonCardHtml(6)}</section>`;
+
+  let inputs;
+  try{
+    inputs = await loadPlayoffInputs();
+  }catch(e){
+    console.error(e);
+    if(token === S.playoffToken) box.innerHTML = `<section class="block">${header}<p class="state-msg">Couldn’t load the schedule from Sleeper. Try again in a moment.</p></section>`;
+    return;
+  }
+  await new Promise(r=>setTimeout(r, 0)); // let the skeleton paint before the CPU-heavy part
+  if(token !== S.playoffToken) return;
+
+  const {teams, remaining, emptyWeeks} = inputs;
+  const result = simulatePlayoffOdds({teams, remaining, spots:PLAYOFF_SPOTS, sims:PLAYOFF_SIMS, seed:20260901});
+
+  // Remaining-schedule difficulty: average strength of each team's remaining opponents.
+  const sos = teams.map(()=>({sum:0, n:0}));
+  remaining.forEach(([a,b])=>{
+    sos[a].sum += result.mu[b]; sos[a].n++;
+    sos[b].sum += result.mu[a]; sos[b].n++;
+  });
+  const sosAvg = sos.map(x=>x.n ? x.sum/x.n : null);
+  const sosForTiers = {};
+  sosAvg.forEach((v,i)=>{ if(v!==null) sosForTiers[i] = -v; }); // buildMatchupTiers treats higher as easier
+  const sosTier = buildMatchupTiers(sosForTiers);
+  const TIER_LABEL = {easy:'Easy', avg:'Avg', tough:'Tough'};
+
+  const rows = teams.map((t,i)=>({
+    t, i, odds: result.teams[i],
+    gamesLeft: sos[i].n,
+    record: `${t.wins}-${t.losses}${t.ties?`-${t.ties}`:''}`,
+    winPct: t.wins + 0.5*t.ties,
+  })).sort((a,b)=> (b.winPct-a.winPct) || (b.t.pf-a.t.pf));
+
+  const tableRows = rows.map((r,pos)=>{
+    const p = r.odds.playoffPct;
+    const tone = p >= 75 ? 'odds-high' : p >= 25 ? 'odds-mid' : 'odds-low';
+    const tier = sosTier[r.i];
+    const schedTag = (tier && sosAvg[r.i]!==null)
+      ? `<span class="matchup-tag matchup-${tier}" data-tip="${escapeHtml(`Remaining opponents average ${sosAvg[r.i].toFixed(1)} pts/game (league average ${result.leagueMean.toFixed(1)})`)}">${TIER_LABEL[tier]}</span>`
+      : '<span style="color:var(--text-dim);">—</span>';
+    return `
+    <tr class="${pos===PLAYOFF_SPOTS-1 ? 'playoff-cutoff' : ''}">
+      <td class="rank-cell"><span class="rank-badge">${pos+1}</span></td>
+      <td><div class="team-cell-inner">${ticketAvatar(r.t.user,'sm')}<div class="team-name">${escapeHtml(r.t.user.teamName)}</div></div></td>
+      <td class="record-cell">${r.record}</td>
+      <td class="record-cell hide-sm">${r.t.pf.toFixed(1)}</td>
+      <td class="record-cell hide-sm">${r.odds.avgWins.toFixed(1)}</td>
+      <td class="odds-cell">
+        <div class="odds-wrap">
+          <div class="odds-bar"><div class="odds-fill ${tone}" style="width:${Math.max(p,0)}%"></div></div>
+          <span class="odds-val" data-odds="${p.toFixed(3)}">${formatOdds(p)}</span>
+        </div>
+      </td>
+      <td class="record-cell hide-sm">${formatOdds(r.odds.seedPct[0]).replace('✓ In','100%').replace('Out','0%')}</td>
+      <td class="record-cell hide-sm">${schedTag}</td>
+    </tr>`;
+  }).join('');
+
+  const notes = [];
+  if(remaining.length === 0) notes.push('The regular season is over — these are the final standings.');
+  if(emptyWeeks.length) notes.push(`Sleeper hasn’t published matchups for week${emptyWeeks.length>1?'s':''} ${emptyWeeks.join(', ')} yet, so those games aren’t included.`);
+
+  box.innerHTML = `
+  <section class="block">
+    ${header}
+    ${notes.map(n=>`<p class="block-sub" style="color:var(--warn);">${escapeHtml(n)}</p>`).join('')}
+    <div class="table-wrap">
+      <table class="scoreboard-table">
+        <thead><tr>
+          <th>#</th><th>Team</th>
+          <th style="text-align:right;">Record</th>
+          <th class="hide-sm" style="text-align:right;">PF</th>
+          <th class="hide-sm" style="text-align:right;">Proj. wins</th>
+          <th style="text-align:right;"><span class="hide-sm">Playoff </span>odds</th>
+          <th class="hide-sm" style="text-align:right;">#1 seed</th>
+          <th class="hide-sm" style="text-align:right;">Schedule</th>
+        </tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+    <p class="block-sub" style="margin-top:12px; font-size:12.5px;">
+      Teams are listed by current standing (wins, then points for); the line marks the playoff cutoff.
+      Each team’s weekly score is simulated around its own scoring average (blended with the league average early in the season),
+      so strong or weak schedules and close races are reflected. The current week is treated as not yet played.
+      “Schedule” rates the strength of each team’s remaining opponents — tap it for details.
+    </p>
+  </section>`;
 }
 
 async function computeTransactionCounts(){
@@ -2433,7 +2701,7 @@ async function init(){
       document.querySelectorAll('#screen-nav .seg-tab').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
       S.screen = btn.dataset.screen;
-      ['board','schedule','roster','transactions','stats'].forEach(name=>{
+      ['board','schedule','roster','transactions','stats','playoffs'].forEach(name=>{
         const el = document.getElementById(`${name}-screen`);
         el.style.display = S.screen===name ? '' : 'none';
         if(S.screen===name){ el.classList.remove('screen-enter'); void el.offsetWidth; el.classList.add('screen-enter'); }
@@ -2447,6 +2715,7 @@ async function init(){
       if(S.screen==='roster') renderRosterScreen();
       if(S.screen==='transactions') renderTransactionsScreen();
       if(S.screen==='stats') renderStatsScreen();
+      if(S.screen==='playoffs') renderPlayoffsScreen();
     });
   });
 
