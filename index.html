@@ -1352,10 +1352,57 @@ function computeStreaks(historyArr){
 /* =========================================================================
    PLAYOFF ODDS — Monte Carlo simulation of the rest of the regular season
    ========================================================================= */
+/* Flex-type slots and which positions may fill them. */
+const FLEX_ELIGIBLE = {
+  FLEX: ['RB','WR','TE'],
+  SUPER_FLEX: ['QB','RB','WR','TE'],
+  SUPERFLEX: ['QB','RB','WR','TE'],
+  REC_FLEX: ['WR','TE'],
+  WRRB_FLEX: ['WR','RB'],
+};
+
+/* Players who can actually be started: everyone on the roster except those
+   parked on injured reserve or the taxi squad. */
+function activePlayerIds(roster){
+  const parked = new Set([...(roster.reserve||[]), ...(roster.taxi||[])]);
+  return (roster.players||[]).filter(pid=>!parked.has(pid));
+}
+
+/* Highest-scoring lineup possible from a set of players, using this league's
+   real starting slots (bench/IR/taxi excluded) — a common greedy approach:
+   fill single-position slots with the best player at that position first,
+   then flex-type slots with the best remaining eligible player. */
+function computeBestLineupTotal(playerIds, playersMap, projMap, rosterPositions){
+  const slots = (rosterPositions||[]).filter(pos=>pos!=='BN' && pos!=='IR' && pos!=='TAXI');
+  const pool = playerIds.map(pid=>{
+    const p = playersMap[pid];
+    const proj = projMap[pid];
+    return {pid, pos: p ? p.position : null, proj: typeof proj==='number' ? proj : 0};
+  }).filter(x=>x.pos);
+  const used = new Set();
+  let total = 0;
+  slots.filter(sl=>!FLEX_ELIGIBLE[sl]).forEach(slotPos=>{
+    let best=null;
+    pool.forEach(x=>{ if(!used.has(x.pid) && x.pos===slotPos && (!best||x.proj>best.proj)) best=x; });
+    if(best){ used.add(best.pid); total+=best.proj; }
+  });
+  slots.filter(sl=>FLEX_ELIGIBLE[sl]).forEach(slotPos=>{
+    const eligible = FLEX_ELIGIBLE[slotPos];
+    let best=null;
+    pool.forEach(x=>{ if(!used.has(x.pid) && eligible.includes(x.pos) && (!best||x.proj>best.proj)) best=x; });
+    if(best){ used.add(best.pid); total+=best.proj; }
+  });
+  return total;
+}
+
 const PLAYOFF_SPOTS = 6;      // the top N teams (by record, then points for) make the playoffs
 const PLAYOFF_SIMS = 20000;   // simulated seasons
 const PRIOR_GAMES = 4;        // pulls each team's scoring average toward the league average
 const PRIOR_SD = 25, PRIOR_SD_WEIGHT = 8;  // weekly-score spread assumed until enough games are played
+const ROSTER_PRIOR_GAMES = 8;     // how many games' worth of evidence the current-roster estimate counts for
+const ROSTER_LOOKAHEAD_WEEKS = 3; // upcoming weeks averaged for roster strength (smooths bye weeks)
+const ROSTER_EDGE_SCALE = 0.7;    // projections are imperfect (and a 'best possible' lineup flatters deep benches), so only part of the projected gap between teams is trusted
+const ROSTER_EDGE_CAP_SD = 1.6;   // a roster can shift a team's expected score by at most this many weekly SDs
 
 /* Small seeded random generator, so the same standings always produce the
    same odds (no jitter every time the tab is opened). */
@@ -1381,11 +1428,15 @@ function makeNormalGenerator(rng){
 }
 
 /* Pure function (no DOM / network), so it can be tested on its own.
-     teams:     [{wins, losses, ties, pf, scores:[weekly points…]}]  — completed games only
+     teams:     [{wins, losses, ties, pf, scores:[weekly points…], rosterStrength?}]  — completed games only.
+                rosterStrength (optional) = projected points of the team's best possible lineup, on the
+                same scale for every team; only the DIFFERENCES between teams are used.
      remaining: [[teamIndexA, teamIndexB], …]                       — every unplayed matchup
    Each team's weekly score is modeled as a normal distribution centered on
-   its own scoring average (shrunk toward the league average while the
-   sample is small), with a league-wide spread. Every simulated matchup draws
+   its own scoring average, with a league-wide spread. That average is shrunk
+   toward a prior: the current roster's strength (relative to the rest of the
+   league) when it's available, otherwise just the league average. The prior
+   matters most early in the season and fades as real games pile up. Every simulated matchup draws
    a score for both teams, so wins AND points-for (the tiebreaker) come out
    of the same simulation. */
 function simulatePlayoffOdds({teams, remaining, spots, sims, seed}){
@@ -1405,9 +1456,23 @@ function simulatePlayoffOdds({teams, remaining, spots, sims, seed}){
   });
   const sigma = Math.sqrt((ss + PRIOR_SD_WEIGHT*PRIOR_SD*PRIOR_SD) / (df + PRIOR_SD_WEIGHT));
 
-  const mu = teams.map(t=>{
+  // Roster strength: only the differences between teams carry information
+  // (projections run higher than real scores, so the absolute level is dropped).
+  const strengths = teams.map(t=> typeof t.rosterStrength === 'number' ? t.rosterStrength : null);
+  const known = strengths.filter(v=>v !== null);
+  const rosterUsed = known.length >= 2;
+  const rosterMean = rosterUsed ? mean(known) : null;
+  const edgeCap = ROSTER_EDGE_CAP_SD * sigma;
+  const edges = strengths.map(v=>{
+    if(!rosterUsed) return null;
+    if(v === null) return 0;
+    return Math.max(-edgeCap, Math.min(edgeCap, (v - rosterMean) * ROSTER_EDGE_SCALE));
+  });
+
+  const mu = teams.map((t,i)=>{
     const k = t.scores.length;
     const m = k ? mean(t.scores) : leagueMean;
+    if(rosterUsed) return (k*m + ROSTER_PRIOR_GAMES*(leagueMean + edges[i])) / (k + ROSTER_PRIOR_GAMES);
     return (k*m + PRIOR_GAMES*leagueMean) / (k + PRIOR_GAMES);
   });
 
@@ -1441,8 +1506,9 @@ function simulatePlayoffOdds({teams, remaining, spots, sims, seed}){
   }
 
   return {
-    sigma, leagueMean, mu,
+    sigma, leagueMean, mu, rosterUsed, rosterMean,
     teams: teams.map((_,i)=>({
+      rosterDiff: rosterUsed && strengths[i] !== null ? strengths[i] - rosterMean : null,
       playoffPct: 100*madeCount[i]/sims,
       seedPct: Array.from(seedCount[i], c=>100*c/sims),
       avgWins: winsSum[i]/sims,
@@ -1494,27 +1560,41 @@ function formatOdds(p){
   return p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`;
 }
 
-async function renderPlayoffsScreen(){
-  const box = document.getElementById('playoffs-list');
-  const token = S.playoffToken = (S.playoffToken||0) + 1;
-  const header = `
+/* Projected strength of each team's CURRENT roster (starters and bench): the
+   best lineup its players could field, averaged over the next few weeks so a
+   single bye week doesn't distort it. Returns null if projections aren't
+   available (the odds then fall back to scoring history alone). */
+async function loadRosterStrengths(){
+  const weeks = [];
+  for(let w=S.nflWeek; w<=Math.min(S.regularWeeks, S.nflWeek + ROSTER_LOOKAHEAD_WEEKS - 1); w++) weeks.push(w);
+  if(weeks.length === 0) return null;
+  const [playersMap, ...projMaps] = await Promise.all([loadPlayersMap(), ...weeks.map(w=>loadProjectionsForWeek(w))]);
+  const usable = projMaps.filter(m=>m && Object.keys(m).length > 0);
+  if(usable.length === 0 || Object.keys(playersMap).length === 0) return null;
+
+  const rosterById = {};
+  S.rosters.forEach(r=>{ rosterById[r.roster_id] = r; });
+  const values = S.users.map(u=>{
+    const r = rosterById[u.rosterId];
+    const ids = r ? activePlayerIds(r) : [];
+    if(ids.length === 0) return null;
+    const totals = usable.map(pm=>computeBestLineupTotal(ids, playersMap, pm, S.league.roster_positions));
+    const avg = totals.reduce((a,b)=>a+b,0) / totals.length;
+    return avg > 0 ? avg : null;
+  });
+  if(values.every(v=>v === null)) return null;
+  return {values, weeksUsed: usable.length};
+}
+
+function playoffsHeaderHtml(){
+  return `
     <h2>Playoff odds</h2>
     <p class="block-sub">Top ${PLAYOFF_SPOTS} make the playoffs. Odds come from simulating the rest of the regular season ${PLAYOFF_SIMS.toLocaleString()} times using the real remaining matchups.</p>`;
-  box.innerHTML = `<section class="block">${header}${skeletonCardHtml(6)}</section>`;
+}
 
-  let inputs;
-  try{
-    inputs = await loadPlayoffInputs();
-  }catch(e){
-    console.error(e);
-    if(token === S.playoffToken) box.innerHTML = `<section class="block">${header}<p class="state-msg">Couldn’t load the schedule from Sleeper. Try again in a moment.</p></section>`;
-    return;
-  }
-  await new Promise(r=>setTimeout(r, 0)); // let the skeleton paint before the CPU-heavy part
-  if(token !== S.playoffToken) return;
-
+function renderPlayoffsTable(box, inputs, result, strengthInfo, status){
   const {teams, remaining, emptyWeeks} = inputs;
-  const result = simulatePlayoffOdds({teams, remaining, spots:PLAYOFF_SPOTS, sims:PLAYOFF_SIMS, seed:20260901});
+  const TIER_LABEL = {easy:'Easy', avg:'Avg', tough:'Tough'};
 
   // Remaining-schedule difficulty: average strength of each team's remaining opponents.
   const sos = teams.map(()=>({sum:0, n:0}));
@@ -1526,11 +1606,14 @@ async function renderPlayoffsScreen(){
   const sosForTiers = {};
   sosAvg.forEach((v,i)=>{ if(v!==null) sosForTiers[i] = -v; }); // buildMatchupTiers treats higher as easier
   const sosTier = buildMatchupTiers(sosForTiers);
-  const TIER_LABEL = {easy:'Easy', avg:'Avg', tough:'Tough'};
+
+  // Roster strength tags (green = strongest third of rosters).
+  const rosterForTiers = {};
+  if(result.rosterUsed) result.teams.forEach((t,i)=>{ if(t.rosterDiff !== null) rosterForTiers[i] = t.rosterDiff; });
+  const rosterTier = buildMatchupTiers(rosterForTiers);
 
   const rows = teams.map((t,i)=>({
     t, i, odds: result.teams[i],
-    gamesLeft: sos[i].n,
     record: `${t.wins}-${t.losses}${t.ties?`-${t.ties}`:''}`,
     winPct: t.wins + 0.5*t.ties,
   })).sort((a,b)=> (b.winPct-a.winPct) || (b.t.pf-a.t.pf));
@@ -1541,6 +1624,11 @@ async function renderPlayoffsScreen(){
     const tier = sosTier[r.i];
     const schedTag = (tier && sosAvg[r.i]!==null)
       ? `<span class="matchup-tag matchup-${tier}" data-tip="${escapeHtml(`Remaining opponents average ${sosAvg[r.i].toFixed(1)} pts/game (league average ${result.leagueMean.toFixed(1)})`)}">${TIER_LABEL[tier]}</span>`
+      : '<span style="color:var(--text-dim);">—</span>';
+    const diff = r.odds.rosterDiff;
+    const rTier = rosterTier[r.i];
+    const rosterTag = (diff !== null && rTier)
+      ? `<span class="matchup-tag matchup-${rTier}" data-tip="${escapeHtml(`Best possible lineup projects ${(strengthInfo.values[r.i]).toFixed(1)} pts/week over the next ${strengthInfo.weeksUsed} week${strengthInfo.weeksUsed>1?'s':''} — ${Math.abs(diff).toFixed(1)} ${diff>=0?'above':'below'} the league average (${result.rosterMean.toFixed(1)})`)}">${diff>=0?'+':'−'}${Math.abs(diff).toFixed(1)}</span>`
       : '<span style="color:var(--text-dim);">—</span>';
     return `
     <tr class="${pos===PLAYOFF_SPOTS-1 ? 'playoff-cutoff' : ''}">
@@ -1556,18 +1644,25 @@ async function renderPlayoffsScreen(){
         </div>
       </td>
       <td class="record-cell hide-sm">${formatOdds(r.odds.seedPct[0]).replace('✓ In','100%').replace('Out','0%')}</td>
+      <td class="record-cell hide-sm">${rosterTag}</td>
       <td class="record-cell hide-sm">${schedTag}</td>
     </tr>`;
   }).join('');
 
   const notes = [];
-  if(remaining.length === 0) notes.push('The regular season is over — these are the final standings.');
-  if(emptyWeeks.length) notes.push(`Sleeper hasn’t published matchups for week${emptyWeeks.length>1?'s':''} ${emptyWeeks.join(', ')} yet, so those games aren’t included.`);
+  if(remaining.length === 0) notes.push(['The regular season is over — these are the final standings.', true]);
+  if(emptyWeeks.length) notes.push([`Sleeper hasn’t published matchups for week${emptyWeeks.length>1?'s':''} ${emptyWeeks.join(', ')} yet, so those games aren’t included.`, true]);
+  if(status === 'loading') notes.push(['Adding current roster strength…', false]);
+  if(status === 'unavailable') notes.push(['Roster projections aren’t available right now, so these odds use scoring history only.', true]);
+
+  const rosterBlurb = result.rosterUsed
+    ? `Each team’s current roster — starters and bench — is projected over the next ${strengthInfo.weeksUsed} week${strengthInfo.weeksUsed>1?'s':''} and compared with the rest of the league, so recent trades, pickups and injuries move the odds. That roster estimate carries the most weight early on and fades as real games are played.`
+    : `Each team’s weekly score is simulated around its own scoring average (blended with the league average early in the season).`;
 
   box.innerHTML = `
   <section class="block">
-    ${header}
-    ${notes.map(n=>`<p class="block-sub" style="color:var(--warn);">${escapeHtml(n)}</p>`).join('')}
+    ${playoffsHeaderHtml()}
+    ${notes.map(([n,warn])=>`<p class="block-sub" style="${warn?'color:var(--warn);':''}">${escapeHtml(n)}</p>`).join('')}
     <div class="table-wrap">
       <table class="scoreboard-table">
         <thead><tr>
@@ -1577,6 +1672,7 @@ async function renderPlayoffsScreen(){
           <th class="hide-sm" style="text-align:right;">Proj. wins</th>
           <th style="text-align:right;"><span class="hide-sm">Playoff </span>odds</th>
           <th class="hide-sm" style="text-align:right;">#1 seed</th>
+          <th class="hide-sm" style="text-align:right;">Roster</th>
           <th class="hide-sm" style="text-align:right;">Schedule</th>
         </tr></thead>
         <tbody>${tableRows}</tbody>
@@ -1584,11 +1680,48 @@ async function renderPlayoffsScreen(){
     </div>
     <p class="block-sub" style="margin-top:12px; font-size:12.5px;">
       Teams are listed by current standing (wins, then points for); the line marks the playoff cutoff.
-      Each team’s weekly score is simulated around its own scoring average (blended with the league average early in the season),
-      so strong or weak schedules and close races are reflected. The current week is treated as not yet played.
-      “Schedule” rates the strength of each team’s remaining opponents — tap it for details.
+      ${rosterBlurb}
+      The current week is treated as not yet played.
+      “Roster” shows how many projected points per week a team’s best possible lineup is above or below the league average;
+      “Schedule” rates the strength of its remaining opponents. Tap either for details.
     </p>
   </section>`;
+}
+
+async function renderPlayoffsScreen(){
+  const box = document.getElementById('playoffs-list');
+  const token = S.playoffToken = (S.playoffToken||0) + 1;
+  box.innerHTML = `<section class="block">${playoffsHeaderHtml()}${skeletonCardHtml(6)}</section>`;
+
+  let inputs;
+  try{
+    inputs = await loadPlayoffInputs();
+  }catch(e){
+    console.error(e);
+    if(token === S.playoffToken) box.innerHTML = `<section class="block">${playoffsHeaderHtml()}<p class="state-msg">Couldn’t load the schedule from Sleeper. Try again in a moment.</p></section>`;
+    return;
+  }
+  await new Promise(r=>setTimeout(r, 0)); // let the skeleton paint before the CPU-heavy part
+  if(token !== S.playoffToken) return;
+
+  const run = strengthValues => simulatePlayoffOdds({
+    teams: inputs.teams.map((t,i)=>({...t, rosterStrength: strengthValues ? strengthValues[i] : null})),
+    remaining: inputs.remaining, spots: PLAYOFF_SPOTS, sims: PLAYOFF_SIMS, seed: 20260901,
+  });
+
+  // Show scoring-history odds immediately; fold in roster strength as soon as
+  // the (larger) projection data arrives, rather than leaving a blank screen.
+  const history = run(null);
+  if(inputs.remaining.length === 0){ renderPlayoffsTable(box, inputs, history, null, 'none'); return; }
+  renderPlayoffsTable(box, inputs, history, null, 'loading');
+
+  const strengthInfo = await loadRosterStrengths();
+  if(token !== S.playoffToken) return;
+  if(!strengthInfo){ renderPlayoffsTable(box, inputs, history, null, 'unavailable'); return; }
+  await new Promise(r=>setTimeout(r, 0));
+  if(token !== S.playoffToken) return;
+  const blended = run(strengthInfo.values);
+  renderPlayoffsTable(box, inputs, blended, strengthInfo, 'on');
 }
 
 async function computeTransactionCounts(){
@@ -2051,43 +2184,6 @@ async function renderRosterScreen(){
     </div>`;
   }
 
-  /* Position slots this league actually starts (excludes bench/IR/taxi),
-     used to work out the highest-scoring lineup possible from the full
-     roster — a common greedy approach: fill single-position slots with
-     the best player at that position first, then flex-type slots with
-     the best remaining eligible player. */
-  const FLEX_ELIGIBLE = {
-    FLEX: ['RB','WR','TE'],
-    SUPER_FLEX: ['QB','RB','WR','TE'],
-    SUPERFLEX: ['QB','RB','WR','TE'],
-    REC_FLEX: ['WR','TE'],
-    WRRB_FLEX: ['WR','RB'],
-  };
-  function computeBestLineupTotal(allPlayerIds){
-    const slots = (S.league.roster_positions||[]).filter(pos=>pos!=='BN' && pos!=='IR' && pos!=='TAXI');
-    const pool = allPlayerIds.map(pid=>{
-      const p = playersMap[pid];
-      const proj = projMap[pid];
-      return {pid, pos: p ? p.position : null, proj: typeof proj==='number' ? proj : 0};
-    }).filter(x=>x.pos);
-    const used = new Set();
-    let total = 0;
-    const exactSlots = slots.filter(s=>!FLEX_ELIGIBLE[s]);
-    const flexSlots = slots.filter(s=>FLEX_ELIGIBLE[s]);
-    exactSlots.forEach(slotPos=>{
-      let best=null;
-      pool.forEach(x=>{ if(!used.has(x.pid) && x.pos===slotPos && (!best||x.proj>best.proj)) best=x; });
-      if(best){ used.add(best.pid); total+=best.proj; }
-    });
-    flexSlots.forEach(slotPos=>{
-      const eligible = FLEX_ELIGIBLE[slotPos];
-      let best=null;
-      pool.forEach(x=>{ if(!used.has(x.pid) && eligible.includes(x.pos) && (!best||x.proj>best.proj)) best=x; });
-      if(best){ used.add(best.pid); total+=best.proj; }
-    });
-    return total;
-  }
-
   const cards = orderedUsers.map(u=>{
     const r = rosterByRosterId[u.rosterId];
     if(!r) return '';
@@ -2102,7 +2198,7 @@ async function renderRosterScreen(){
       return sum + (typeof v==='number' ? v : 0);
     }, 0);
     const missingCount = starterIds.filter(pid=>typeof projMap[pid]!=='number').length;
-    const bestTotal = computeBestLineupTotal(allIds);
+    const bestTotal = computeBestLineupTotal(activePlayerIds(r), playersMap, projMap, S.league.roster_positions);
     const leftOnBench = Math.max(bestTotal - starterTotal, 0);
 
     return `
